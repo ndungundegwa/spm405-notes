@@ -1,4 +1,4 @@
-/* ml-interactive.js — small interactive figures for the SPM 3405 and SPH 508 notes sites.
+/* ml-interactive.js — small interactive figures for the SPM 405 and SPH 508 notes sites.
  * Plain JavaScript and <canvas>, no libraries. Each widget is a <div class="ml-widget" data-widget="name">
  * written by the {{< interactive name >}} shortcode. Colours follow the light/dark theme.
  * Written for these courses by Charles Ndung'u Ndegwa's course sites.

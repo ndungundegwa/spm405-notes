@@ -1414,6 +1414,473 @@
     draw(); return draw;
   };
 
+  // ------------------------------------------------------------------ more helpers
+  function solveLin(A0, b0) {                    // Gaussian elimination with pivoting
+    const n = b0.length, A = A0.map((r) => r.slice()), b = b0.slice();
+    for (let i = 0; i < n; i++) {
+      let m = i; for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[m][i])) m = r;
+      [A[i], A[m]] = [A[m], A[i]]; [b[i], b[m]] = [b[m], b[i]];
+      for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; if (!f) continue; for (let c = i; c < n; c++) A[r][c] -= f * A[i][c]; b[r] -= f * b[i]; }
+    }
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) { let s = b[i]; for (let c = i + 1; c < n; c++) s -= A[i][c] * x[c]; x[i] = s / A[i][i]; }
+    return x;
+  }
+  function ring(P, x, y, col, r, w) { const c = P.ctx; c.strokeStyle = col; c.lineWidth = w || 1.6; c.beginPath(); c.arc(P.X(x), P.Y(y), r || 5, 0, 2 * Math.PI); c.stroke(); }
+  function moons(seed, n, noise) {               // two interleaved half-moons, classes 0 and 1
+    const r = rng(seed), D = [];
+    for (let i = 0; i < n; i++) {
+      const y = i % 2, t = Math.PI * r(), x = y ? [1 - Math.cos(t), 0.5 - Math.sin(t)] : [Math.cos(t), Math.sin(t)];
+      D.push({ x: [x[0] + noise * r.normal(), x[1] + noise * r.normal()], y });
+    }
+    return D;
+  }
+  function regions(P, f, nx, ny) {               // shade the plot by the predicted class (0 blue, 1 orange)
+    const k = C(), c = P.ctx, xr = P.xr, yr = P.yr, cw = (P.X(xr[1]) - P.X(xr[0])) / nx, ch = (P.Y(yr[0]) - P.Y(yr[1])) / ny;
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+      const x = xr[0] + (i + 0.5) * (xr[1] - xr[0]) / nx, y = yr[1] - (j + 0.5) * (yr[1] - yr[0]) / ny;
+      c.fillStyle = f([x, y]) ? k.fillB : k.fillA; c.fillRect(P.X(xr[0]) + i * cw, P.Y(yr[1]) + j * ch, cw + 0.6, ch + 0.6);
+    }
+  }
+  function trainMLP(D, H, seed, epochs, batch, lr) {   // a 2-H-1 network (tanh, sigmoid output) trained with Adam
+    const r = rng(seed), np = 4 * H + 1, th = new Float64Array(np), m = new Float64Array(np), v = new Float64Array(np), g = new Float64Array(np), hid = new Float64Array(H);
+    for (let h = 0; h < H; h++) { th[2 * h] = r.normal(); th[2 * h + 1] = r.normal(); th[3 * H + h] = r.normal() / Math.sqrt(H); }
+    const fwd = (x) => {
+      let o = th[4 * H];
+      for (let h = 0; h < H; h++) { hid[h] = Math.tanh(th[2 * h] * x[0] + th[2 * h + 1] * x[1] + th[2 * H + h]); o += th[3 * H + h] * hid[h]; }
+      return 1 / (1 + Math.exp(-o));
+    };
+    const idx = D.map((_, i) => i); let t = 0;
+    for (let e = 0; e < epochs; e++) {
+      for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+      for (let s = 0; s < idx.length; s += batch) {
+        g.fill(0); const end = Math.min(idx.length, s + batch);
+        for (let q = s; q < end; q++) {
+          const d = D[idx[q]], p = fwd(d.x), dl = (p - d.y) / (end - s);
+          g[4 * H] += dl;
+          for (let h = 0; h < H; h++) { g[3 * H + h] += dl * hid[h]; const dz = dl * th[3 * H + h] * (1 - hid[h] * hid[h]); g[2 * h] += dz * d.x[0]; g[2 * h + 1] += dz * d.x[1]; g[2 * H + h] += dz; }
+        }
+        t++; const c1 = 1 - Math.pow(0.9, t), c2 = 1 - Math.pow(0.999, t);
+        for (let q = 0; q < np; q++) { m[q] = 0.9 * m[q] + 0.1 * g[q]; v[q] = 0.999 * v[q] + 0.001 * g[q] * g[q]; th[q] -= lr * (m[q] / c1) / (Math.sqrt(v[q] / c2) + 1e-8); }
+      }
+    }
+    return fwd;
+  }
+  function growTree(D, idx, depth, r, oneFeature) {  // classification tree (Gini); r and oneFeature for random forests
+    const n = idx.length, n1 = idx.reduce((s, i) => s + D[i].y, 0), leaf = () => { const c = 2 * n1 >= n ? 1 : 0; return () => c; };
+    if (depth === 0 || n < 4 || n1 === 0 || n1 === n) return leaf();
+    let best = null, bg = Infinity;
+    for (const f of oneFeature ? [Math.floor(r() * 2)] : [0, 1]) {
+      const s = idx.slice().sort((a, b) => D[a].x[f] - D[b].x[f]); let l1 = 0;
+      for (let q = 0; q < n - 1; q++) {
+        l1 += D[s[q]].y; if (D[s[q]].x[f] === D[s[q + 1]].x[f]) continue;
+        const nl = q + 1, nr = n - nl, pl = l1 / nl, pr = (n1 - l1) / nr, gi = nl * pl * (1 - pl) + nr * pr * (1 - pr);
+        if (gi < bg) { bg = gi; best = [f, (D[s[q]].x[f] + D[s[q + 1]].x[f]) / 2]; }
+      }
+    }
+    if (!best) return leaf();
+    const [f, cut] = best, L = idx.filter((i) => D[i].x[f] <= cut), R = idx.filter((i) => D[i].x[f] > cut);
+    const fl = growTree(D, L, depth - 1, r, oneFeature), fr = growTree(D, R, depth - 1, r, oneFeature);
+    return (x) => (x[f] <= cut ? fl(x) : fr(x));
+  }
+
+  // 30. The three ingredients: a model family, an error measured on unseen data, and an optimiser that lowers it
+  W.ingredients = (box) => {
+    const truth = (x) => Math.sin(2.5 * x) + 0.3 * x, r = rng(31), tr = [], te = [];
+    for (let i = 0; i < 14; i++) { const x = -1 + 2 * r(); tr.push([x, truth(x) + 0.25 * r.normal()]); }
+    for (let i = 0; i < 40; i++) { const x = -1 + 2 * r(); te.push([x, truth(x) + 0.25 * r.normal()]); }
+    const FAM = { "straight lines": 1, "parabolas (degree 2)": 2, "cubics (degree 3)": 3, "degree-9 polynomials": 9 };
+    let deg = 1, w, m, v, it, hist, running = false, showTest = true;
+    const phi = (x) => { const P = [1, x]; for (let n = 1; n < deg; n++) P.push(((2 * n + 1) * x * P[n] - n * P[n - 1]) / (n + 1)); return P.slice(0, deg + 1); };
+    const pred = (x) => phi(x).reduce((s, f, i) => s + f * w[i], 0);
+    const mse = (D) => D.reduce((s, [x, y]) => s + (pred(x) - y) ** 2, 0) / D.length;
+    const reset = () => { w = new Array(deg + 1).fill(0); m = w.slice(); v = w.slice(); it = 0; hist = [[0, mse(tr), mse(te)]]; };
+    const steps = (k) => {
+      for (let q = 0; q < k; q++) {
+        const g = new Array(deg + 1).fill(0);
+        tr.forEach(([x, y]) => { const f = phi(x), e = 2 * (pred(x) - y) / tr.length; f.forEach((fi, i) => { g[i] += e * fi; }); });
+        it++; const c1 = 1 - Math.pow(0.9, it), c2 = 1 - Math.pow(0.999, it);
+        for (let i = 0; i <= deg; i++) { m[i] = 0.9 * m[i] + 0.1 * g[i]; v[i] = 0.999 * v[i] + 0.001 * g[i] * g[i]; w[i] -= 0.05 * (m[i] / c1) / (Math.sqrt(v[i] / c2) + 1e-8); }
+      }
+      hist.push([it, mse(tr), mse(te)]);
+    };
+    const top = el("div", { class: "mlw-pair" }, box);
+    const P = plot(el("div", { class: "mlw-col" }, top), [-1, 1], [-2, 2], { ratio: 0.72, maxWidth: 460 });
+    const Q = plot(el("div", { class: "mlw-col mlw-col-narrow" }, top), [0, 1500], [0, 1.2], { ratio: 0.8, maxWidth: 340 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("x", "y", ticks(-1, 1, 4), ticks(-2, 2, 4));
+      P.clip(() => {
+        if (showTest) te.forEach(([x, y]) => ring(P, x, y, k.muted, 3.2, 1.2));
+        tr.forEach(([x, y]) => P.dot(x, y, k.a, 4));
+        const g = []; for (let x = -1; x <= 1.0001; x += 0.005) g.push([x, pred(x)]);
+        P.line(g, k.r, 2.6);
+      });
+      Q.clear(); Q.axes("optimisation step", "MSE", [0, 500, 1000, 1500], ticks(0, 1.2, 4));
+      Q.clip(() => { Q.line(hist.map((h) => [h[0], h[1]]), k.a, 2.2); if (showTest) Q.line(hist.map((h) => [h[0], h[2]]), k.r, 2.2, [6, 3]); });
+      Q.text("training", Q.w - 20, 22, k.a, "right"); if (showTest) Q.text("test (dashed)", Q.w - 20, 40, k.r, "right");
+      const h = hist[hist.length - 1];
+      out.innerHTML = `<b>1 Representation:</b> each x becomes ${deg + 1} numbers and the model family is ${Object.keys(FAM).find((s) => FAM[s] === deg)} (${deg + 1} parameters). ` +
+        `<b>2 Evaluation:</b> training MSE <b>${h[1].toFixed(3)}</b> on the 14 filled points; test MSE <b>${h[2].toFixed(3)}</b> on the 40 hollow points the model never saw. ` +
+        `<b>3 Optimisation:</b> gradient descent, step <b>${it}</b>: each step moves the parameters a little downhill on the training MSE.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "model family", Object.keys(FAM), "straight lines", (s) => { deg = FAM[s]; running = false; trainB.textContent = "Train"; reset(); draw(); });
+    const trainB = button(c, "Train", () => {
+      running = !running; trainB.textContent = running ? "Pause" : "Train";
+      const f = () => { if (!running) return; steps(15); draw(); if (it >= 1500) { running = false; trainB.textContent = "Train"; return; } requestAnimationFrame(f); };
+      if (running) requestAnimationFrame(f);
+    });
+    button(c, "Start again", () => { running = false; trainB.textContent = "Train"; reset(); draw(); });
+    checkbox(c, "show test data", true, (s) => { showTest = s; draw(); });
+    reset(); draw(); return draw;
+  };
+
+  // 31. The matrix product, one entry at a time
+  W.matmul = (box, opts) => {
+    const EX = {
+      "a 2×2 product": { A: [[1, 2], [3, 4]], B: [[5, 6], [7, 8]], an: "A", bn: "B", cn: "AB" },
+      "Hubble: 3 galaxies": { A: [[1, 20.8], [1, 60.6], [1, 141.0]], B: [[0.1], [0.07]], an: "X", bn: "β", cn: "ŷ = Xβ", cols: ["1", "d (Mpc)"] },
+      "solar panel: 3 readings": { A: [[1, 260, 31.1], [1, 410, 35.6], [1, 150, 28.4]], B: [[2.0], [0.25], [-0.3]], an: "X", bn: "β", cn: "ŷ = Xβ", cols: ["1", "G", "T"] },
+    };
+    const names = Object.keys(EX), first = opts.example === "solar" ? names[2] : opts.example === "hubble" ? names[1] : names[0];
+    let ex = EX[first], cur = -1, timer = null;
+    const row = el("div", { class: "mlw-matrow" }, box), out = readout(box);
+    const fmt = (v) => String(+v.toFixed(3));
+    const prod = () => ex.A.map((a) => ex.B[0].map((_, j) => a.reduce((s, x, kk) => s + x * ex.B[kk][j], 0)));
+    const draw = () => {
+      const k = C(), R = prod(), r = ex.A.length, s = ex.B[0].length, d = ex.B.length, i = cur >= 0 ? Math.floor(cur / s) : -1, j = cur >= 0 ? cur % s : -1;
+      const tab = (M, name, hl, show) => {
+        let h = `<div class="mlw-matwrap"><div class="mlw-matname">${name}</div><table class="mlw-mat">`;
+        M.forEach((rw, a) => { h += "<tr>" + rw.map((x, b) => { const on = hl(a, b), txt = show(a, b) ? fmt(x) : "?"; return `<td style="${on ? `background:${on};font-weight:600` : ""}">${txt}</td>`; }).join("") + "</tr>"; });
+        return h + "</table></div>";
+      };
+      row.innerHTML = tab(ex.A, `${ex.an} (${r}×${d})`, (a) => (a === i ? k.fillA : ""), () => true) + '<div class="mlw-op">×</div>' +
+        tab(ex.B, `${ex.bn} (${d}×${s})`, (a, b) => (b === j ? k.fillB : ""), () => true) + '<div class="mlw-op">=</div>' +
+        tab(R, `${ex.cn} (${r}×${s})`, (a, b) => (a === i && b === j ? rgba(k.g, 0.3) : ""), (a, b) => a * s + b <= cur);
+      if (cur < 0) out.innerHTML = `Sizes: (${r}×${d})(${d}×${s}) = ${r}×${s}. The inner sizes match (${d}), so the product exists and has the outer sizes. Press Step to compute the entries one at a time.`;
+      else {
+        const terms = ex.A[i].map((x, kk) => `${fmt(x)}×${fmt(ex.B[kk][j])}`).join(" + ");
+        out.innerHTML = `Entry (${i + 1}, ${j + 1}): go along <b style="color:${k.a}">row ${i + 1}</b> of ${ex.an} and down <b style="color:${k.b}">column ${j + 1}</b> of ${ex.bn}, multiply in pairs and add: ` +
+          `${terms} = <b>${fmt(R[i][j])}</b>.` + (s === 1 ? ` This is the model's prediction for observation ${i + 1}.` : "") + (cur === r * s - 1 ? " All entries done." : "");
+      }
+    };
+    const total = () => ex.A.length * ex.B[0].length;
+    const stop = () => { if (timer) { clearInterval(timer); timer = null; playB.textContent = "Play"; } };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "example", names, first, (s) => { stop(); ex = EX[s]; cur = -1; draw(); });
+    button(c, "Step", () => { stop(); cur = cur + 1 >= total() ? -1 : cur + 1; draw(); });
+    const playB = button(c, "Play", () => {
+      if (timer) { stop(); return; }
+      if (cur >= total() - 1) cur = -1;
+      playB.textContent = "Pause";
+      timer = setInterval(() => { cur++; draw(); if (cur >= total() - 1) stop(); }, 1300);
+    });
+    button(c, "Reset", () => { stop(); cur = -1; draw(); });
+    draw(); return draw;
+  };
+
+  // 32. Reducible and irreducible error: the noise sets a floor
+  W.noisefloor = (box) => {
+    const f = (x) => 1.2 * Math.sin(2 * Math.PI * x) + 2 * x;
+    const MODELS = { "perfect: f̂ = f": -1, "straight line": 1, "cubic": 3, "very flexible (degree 15)": 15 };
+    let sd = 0.4, model = "straight line", seed = 1, xs = [], ys = [], fh = f;
+    const top = el("div", { class: "mlw-pair" }, box);
+    const P = plot(el("div", { class: "mlw-col" }, top), [0, 1], [-1.5, 3.5], { ratio: 0.72, maxWidth: 480 });
+    const Q = plot(el("div", { class: "mlw-col mlw-col-narrow" }, top), [0.3, 2.7], [0, 1], { ratio: 0.9, maxWidth: 300 });
+    const out = readout(box);
+    const fit = () => {
+      const r = rng(seed); xs = []; ys = [];
+      for (let i = 0; i < 30; i++) { const x = r(); xs.push(x); ys.push(f(x) + sd * r.normal()); }
+      const d = MODELS[model];
+      if (d < 0) fh = f; else { const pf = polyfit(xs.map((x) => 2 * x - 1), ys, d, 1e-9); fh = (x) => pf(2 * x - 1); }
+    };
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("X", "Y", ticks(0, 1, 5), ticks(-1, 3, 4));
+      const g = []; for (let x = 0; x <= 1.0001; x += 0.004) g.push(x);
+      P.clip(() => {
+        P.line(g.map((x) => [x, f(x)]), k.muted, 2, [6, 4]);
+        xs.forEach((x, i) => P.dot(x, ys[i], k.a, 3.4));
+        P.line(g.map((x) => [x, fh(x)]), k.r, 2.6);
+      });
+      const red = g.reduce((s, x) => s + (fh(x) - f(x)) ** 2, 0) / g.length, irr = sd * sd;
+      const r2 = rng(seed + 999); let meas = 0; for (let i = 0; i < 2000; i++) { const x = r2(); meas += (f(x) + sd * r2.normal() - fh(x)) ** 2; } meas /= 2000;
+      const top2 = Math.max(0.5, 1.2 * Math.max(red + irr, meas)); Q.yr = [0, top2];
+      Q.clear(); Q.axes("", "average squared error", [], ticks(0, +top2.toFixed(1), 4));
+      const c = Q.ctx, bar = (x, y0, y1, col) => { c.fillStyle = col; c.fillRect(Q.X(x - 0.32), Q.Y(Math.min(y1, top2)), Q.X(x + 0.32) - Q.X(x - 0.32), Q.Y(y0) - Q.Y(Math.min(y1, top2))); };
+      bar(1, 0, irr, k.b); bar(1, irr, irr + red, k.a); bar(2, 0, meas, k.grid);
+      Q.line([[0.3, irr], [2.7, irr]], k.b, 1.4, [4, 3]);
+      Q.text("theory", Q.X(1), Q.h - 22, k.ink, "center"); Q.text("measured", Q.X(2), Q.h - 22, k.ink, "center");
+      Q.text("noise floor", Q.X(2.7) - 2, Q.Y(irr) - 9, k.b, "right");
+      out.innerHTML = `Dashed: the true f; red: the estimate f̂ from 30 points. <span style="color:${k.a}">Reducible error</span> [f − f̂]² averaged over X: <b>${red.toFixed(3)}</b>. ` +
+        `<span style="color:${k.b}">Irreducible error</span> Var(ε) = σ² = <b>${irr.toFixed(3)}</b>. Their sum, <b>${(red + irr).toFixed(3)}</b>, matches the error measured on 2000 new points, <b>${meas.toFixed(3)}</b>. ` +
+        (model.startsWith("perfect") ? "Even the perfect model cannot go below the noise floor." : "A better model can shrink only the blue part.");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "model", Object.keys(MODELS), model, (s) => { model = s; fit(); draw(); });
+    slider(c, "noise σ", 0, 1, 0.01, sd, (s) => s.toFixed(2), (s) => { sd = s; fit(); draw(); });
+    button(c, "New training sample", () => { seed++; fit(); draw(); });
+    fit(); draw(); return draw;
+  };
+
+  // 33. The maximal margin classifier: the widest street, and only the support vectors matter
+  W.margin = (box) => {
+    const r = rng(2), D = [], u0 = [0.82, 0.57];
+    while (D.length < 30) { const y = D.length % 2 ? 1 : -1, x = [1.0 * y + 0.5 * r.normal(), 0.7 * y + 0.5 * r.normal()]; if (y * (x[0] * u0[0] + x[1] * u0[1]) > 0.7) D.push({ x, y }); }
+    let th = 75 * Math.PI / 180, b = 0.4, showBest = false, stopAnim = null, drag = -1;
+    const ev = (t) => { const c = Math.cos(t), s = Math.sin(t); let lo = Infinity, hi = -Infinity; D.forEach((d) => { const p = c * d.x[0] + s * d.x[1]; if (d.y > 0) lo = Math.min(lo, p); else hi = Math.max(hi, p); }); return [(lo - hi) / 2, (lo + hi) / 2]; };
+    const best = () => {
+      let bm = -Infinity, bt = 0, bb = 0;
+      for (let i = 0; i < 1440; i++) { const t = 2 * Math.PI * i / 1440, [mm, bo] = ev(t); if (mm > bm) { bm = mm; bt = t; bb = bo; } }
+      for (let st = 2 * Math.PI / 1440; st > 1e-9; st /= 2) for (const t of [bt - st, bt + st]) { const [mm, bo] = ev(t); if (mm > bm) { bm = mm; bt = t; bb = bo; } }
+      return { th: bt, b: bb, m: bm };
+    };
+    const P = plot(box, [-2.6, 2.6], [-2.2, 2.2], { ratio: 0.75, maxWidth: 600 });
+    const out = readout(box);
+    const lineAt = (t, off, col, w, dash) => { const u = [Math.cos(t), Math.sin(t)], p0 = [off * u[0], off * u[1]], dv = [-u[1], u[0]]; P.line([[p0[0] - 9 * dv[0], p0[1] - 9 * dv[1]], [p0[0] + 9 * dv[0], p0[1] + 9 * dv[1]]], col, w, dash); };
+    const draw = () => {
+      const k = C(), u = [Math.cos(th), Math.sin(th)], sd = D.map((d) => d.y * (u[0] * d.x[0] + u[1] * d.x[1] - b)), mn = Math.min(...sd), B = best();
+      P.clear(); P.axes("density (standardised)", "conductivity (standardised)", ticks(-2, 2, 4), ticks(-2, 2, 4));
+      P.clip(() => {
+        if (mn > 0) {                              // the street
+          const dv = [-u[1], u[0]], c = P.ctx, q = (o, s) => [(b + o) * u[0] + s * 9 * dv[0], (b + o) * u[1] + s * 9 * dv[1]];
+          const pts = [q(-mn, -1), q(-mn, 1), q(mn, 1), q(mn, -1)];
+          c.beginPath(); pts.forEach(([x, y], i) => (i ? c.lineTo(P.X(x), P.Y(y)) : c.moveTo(P.X(x), P.Y(y)))); c.closePath(); c.fillStyle = rgba(k.g, 0.12); c.fill();
+          lineAt(th, b - mn, k.g, 1.4, [5, 4]); lineAt(th, b + mn, k.g, 1.4, [5, 4]);
+        }
+        if (showBest) { lineAt(B.th, B.b, k.r, 1.6, [2, 3]); lineAt(B.th, B.b - B.m, rgba(k.r, 0.5), 1, [2, 3]); lineAt(B.th, B.b + B.m, rgba(k.r, 0.5), 1, [2, 3]); }
+        lineAt(th, b, k.ink, 2.2);
+        D.forEach((d, i) => { P.dot(d.x[0], d.x[1], d.y > 0 ? k.a : k.b, 4.2); if (mn > 0 && sd[i] - mn < 1e-3) ring(P, d.x[0], d.x[1], k.g, 8, 2); if (sd[i] <= 0) ring(P, d.x[0], d.x[1], k.r, 8, 2); });
+      });
+      const wrong = sd.filter((s) => s <= 0).length, nsv = D.filter((d) => { const v = d.y * (Math.cos(B.th) * d.x[0] + Math.sin(B.th) * d.x[1] - B.b); return v - B.m < 2e-3; }).length;
+      out.innerHTML = `Blue: pure milk; orange: watered. ` + (mn > 0 ? `Your line separates the classes with a street of width <b>${(2 * mn).toFixed(2)}</b> (green; the points on its edges are circled).` :
+        `Your line puts <b>${wrong}</b> sample${wrong > 1 ? "s" : ""} on the wrong side (red circles).`) +
+        ` The widest possible street has width <b>${(2 * B.m).toFixed(2)}</b> and is fixed by <b>${nsv}</b> support vectors.` + (showBest ? " It is shown dotted red. Drag a point that is not a support vector: the dotted line does not move." : "");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    const thS = slider(c, "direction of w (degrees)", 0, 360, 0.5, th * 180 / Math.PI, (s) => s.toFixed(1) + "°", (s) => { th = s * Math.PI / 180; draw(); });
+    const bS = slider(c, "offset b", -1.5, 1.5, 0.01, b, (s) => s.toFixed(2), (s) => { b = s; draw(); });
+    button(c, "Find the widest street", () => {
+      if (stopAnim) stopAnim(); const B = best(), t0 = th, b0 = b; let dt = B.th - t0; dt = Math.atan2(Math.sin(dt), Math.cos(dt));
+      stopAnim = animate(1500, (e) => { th = t0 + dt * e; b = b0 + (B.b - b0) * e; thS.value = (((th * 180 / Math.PI) % 360) + 360) % 360; bS.value = b; thS.dispatchEvent(new Event("input")); bS.dispatchEvent(new Event("input")); }, () => { stopAnim = null; });
+    });
+    checkbox(c, "show the widest street", false, (s) => { showBest = s; draw(); });
+    el("div", { class: "mlw-hint" }, box, "Drag any sample with the mouse or a finger to move it.");
+    P.cv.style.touchAction = "none";
+    const at = (e) => { const rc = P.cv.getBoundingClientRect(); return [e.clientX - rc.left, e.clientY - rc.top]; };
+    P.cv.addEventListener("pointerdown", (e) => { const [px, py] = at(e); let bd = 14; drag = -1; D.forEach((d, i) => { const dd = Math.hypot(P.X(d.x[0]) - px, P.Y(d.x[1]) - py); if (dd < bd) { bd = dd; drag = i; } }); if (drag >= 0) P.cv.setPointerCapture(e.pointerId); });
+    P.cv.addEventListener("pointermove", (e) => { if (drag < 0) return; const [px, py] = at(e); D[drag].x = [P.invX(px), P.invY(py)]; draw(); });
+    P.cv.addEventListener("pointerup", () => { drag = -1; });
+    draw(); return draw;
+  };
+
+  // 34. Hinge loss and log loss
+  W.hinge = (box) => {
+    let z = 0.5;
+    const P = plot(box, [-3, 3], [0, 4], { ratio: 0.55, maxWidth: 620 });
+    const S = plot(box, [-3, 3], [0, 1], { ratio: 0.16, maxWidth: 620 });
+    S.pad.b = 22; S.pad.t = 4;
+    const out = readout(box);
+    const hinge = (t) => Math.max(0, 1 - t), logl = (t) => Math.log(1 + Math.exp(-t)), zo = (t) => (t <= 0 ? 1 : 0);
+    const draw = () => {
+      const k = C(), g = []; for (let t = -3; t <= 3.0001; t += 0.01) g.push(t);
+      P.clear(); P.axes("signed distance  y·f(x)", "loss", ticks(-3, 3, 6), ticks(0, 4, 4));
+      P.clip(() => {
+        P.line([[1, 0], [1, 4]], k.grid, 1, [3, 3]); P.line([[0, 0], [0, 4]], k.grid, 1);
+        P.line(g.map((t) => [t, zo(t)]), k.muted, 1.6, [5, 4]);
+        P.line(g.map((t) => [t, logl(t)]), k.a, 2.4); P.line(g.map((t) => [t, hinge(t)]), k.r, 2.6);
+        P.line([[z, 0], [z, 4]], k.g, 1.4, [4, 3]); P.dot(z, hinge(z), k.r, 5.5); P.dot(z, logl(z), k.a, 5.5);
+      });
+      P.text("hinge loss (SVM)", P.X(1.15), P.Y(3.75), k.r); P.text("log loss (logistic regression)", P.X(1.15), P.Y(3.35), k.a); P.text("0–1 loss (counts errors)", P.X(1.15), P.Y(2.95), k.muted);
+      S.clear(); const c = S.ctx;
+      c.fillStyle = rgba(k.g, 0.15); c.fillRect(S.X(-1), S.Y(1), S.X(1) - S.X(-1), S.Y(0) - S.Y(1));
+      S.line([[0, 0], [0, 1]], k.ink, 2); S.line([[-1, 0], [-1, 1]], k.g, 1.2, [4, 3]); S.line([[1, 0], [1, 1]], k.g, 1.2, [4, 3]);
+      S.text("wrong side", S.X(-2), S.Y(0.5), k.muted, "center"); S.text("street", S.X(-0.5), S.Y(0.5), k.g, "center"); S.text("safely outside", S.X(2), S.Y(0.5), k.muted, "center");
+      S.dot(z, 0.5, k.a, 6);
+      const where = z <= 0 ? "on the <b>wrong side</b> of the boundary: both losses are large and grow with the distance" : z < 1 ? "<b>inside the street</b>: correctly classified, but the hinge loss still pushes it out" : "<b>safely outside the street</b>: the hinge loss is exactly 0, so this point has no influence on the SVM; the log loss is small but not zero";
+      out.innerHTML = `y·f(x) = <b>${z.toFixed(2)}</b>: hinge loss <b style="color:${k.r}">${hinge(z).toFixed(3)}</b>, log loss <b style="color:${k.a}">${logl(z).toFixed(3)}</b>. The point is ${where}.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "move the point: y·f(x)", -3, 3, 0.01, z, (s) => s.toFixed(2), (s) => { z = s; draw(); });
+    draw(); return draw;
+  };
+
+  // 35. A recurrent unit: the hidden state as memory
+  W.rnn = (box) => {
+    const T = 60, MODES = ["a single pulse", "a step", "a disturbance that lingers (AR(1))"];
+    let mode = MODES[0], w = 0.7, u = 1.0, t = T, playing = false;
+    const ar = (() => { const r = rng(9), e = [0]; for (let i = 1; i < T; i++) e.push(0.7 * e[i - 1] + 0.35 * r.normal()); return e; })();
+    const xs = () => Array.from({ length: T }, (_, i) => (mode === MODES[0] ? (i === 6 ? 1 : 0) : mode === MODES[1] ? (i >= 6 && i < 36 ? 0.6 : 0) : ar[i]));
+    const hs = (x) => { const h = []; let p = 0; x.forEach((xi) => { p = Math.tanh(w * p + u * xi); h.push(p); }); return h; };
+    const PX = plot(box, [0, T], [-1.2, 1.2], { ratio: 0.24, maxWidth: 700 }), PH = plot(box, [0, T], [-1, 1], { ratio: 0.3, maxWidth: 700 });
+    PX.pad.l = PH.pad.l = 52;
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), x = xs(), h = hs(x), n = Math.max(1, Math.min(T, Math.round(t)));
+      PX.clear(); PX.axes("", "input xₜ", [], [-1, 0, 1]);
+      x.forEach((v, i) => { const c = PX.ctx; c.fillStyle = i < n ? k.a : k.grid; c.fillRect(PX.X(i + 0.15), PX.Y(Math.max(v, 0)), PX.X(i + 0.85) - PX.X(i + 0.15), Math.abs(PX.Y(v) - PX.Y(0)) + 0.5); });
+      PH.clear(); PH.axes("time step t", "hidden state hₜ", ticks(0, T, 6), [-1, 0, 1]);
+      PH.clip(() => { PH.line([[0, 0], [T, 0]], k.grid, 1); PH.line(h.slice(0, n).map((v, i) => [i + 0.5, v]), k.r, 2.4); PH.dot(n - 0.5, h[n - 1], k.r, 5); });
+      const hp = n > 1 ? h[n - 2] : 0, half = w > 0.01 ? Math.log(0.5) / Math.log(w) : 0;
+      out.innerHTML = `Step ${n}: h<sub>t</sub> = tanh(W·h<sub>t−1</sub> + U·x<sub>t</sub>) = tanh(${w.toFixed(2)} × ${hp.toFixed(3)} + ${u.toFixed(2)} × ${x[n - 1].toFixed(3)}) = <b>${h[n - 1].toFixed(3)}</b>. ` +
+        `With no new input the memory shrinks by about a factor W = ${w.toFixed(2)} each step, so it halves in about <b>${half.toFixed(1)}</b> steps. ` +
+        `W near 0: the unit forgets at once; W near 1: it remembers for a long time.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "input", MODES, mode, (s) => { mode = s; draw(); });
+    slider(c, "memory weight W", 0, 0.99, 0.01, w, (s) => s.toFixed(2), (s) => { w = s; draw(); });
+    slider(c, "input weight U", 0.1, 2, 0.05, u, (s) => s.toFixed(2), (s) => { u = s; draw(); });
+    const playB = button(c, "Play from the start", () => {
+      if (playing) { playing = false; playB.textContent = "Play from the start"; return; }
+      playing = true; playB.textContent = "Stop"; t = 1; let last = performance.now();
+      const f = (now) => { if (!playing) return; t += (now - last) * 0.012; last = now; if (t >= T) { t = T; playing = false; playB.textContent = "Play from the start"; } draw(); if (playing) requestAnimationFrame(f); };
+      requestAnimationFrame(f);
+    });
+    draw(); return draw;
+  };
+
+  // 36. Simple or flexible? It depends on the amount of data and on how complicated the pattern is
+  W.datasize = (box) => {
+    const SD = 0.3, NS = [10, 20, 40, 80, 160, 320, 640, 1280, 2560], R = 12, G = []; for (let i = 0; i < 200; i++) G.push((i + 0.5) / 200);
+    let cyc = 2, sel = 3, curves = null;
+    const f = (x) => Math.sin(2 * Math.PI * cyc * x) + 0.5 * x;
+    const fitSimple = (xs, ys) => { const pf = polyfit(xs.map((x) => 2 * x - 1), ys, 3, 1e-9); return (x) => pf(2 * x - 1); };
+    const fitFlex = (xs, ys) => {
+      const o = xs.map((_, i) => i).sort((a, b) => xs[a] - xs[b]), sx = o.map((i) => xs[i]), sy = o.map((i) => ys[i]), n = sx.length, K = Math.max(2, Math.round(Math.sqrt(n)));
+      return (x) => {
+        let lo = 0, hi = n; while (lo < hi) { const mid = (lo + hi) >> 1; if (sx[mid] < x) lo = mid + 1; else hi = mid; }
+        let a = lo - 1, b = lo, s = 0;
+        for (let q = 0; q < K; q++) { if (b >= n || (a >= 0 && x - sx[a] <= sx[b] - x)) { s += sy[a]; a--; } else { s += sy[b]; b++; } }
+        return s / K;
+      };
+    };
+    const sample = (n, seed) => { const r = rng(seed), xs = [], ys = []; for (let i = 0; i < n; i++) { const x = r(); xs.push(x); ys.push(f(x) + SD * r.normal()); } return [xs, ys]; };
+    const err = (g) => G.reduce((s, x) => s + (g(x) - f(x)) ** 2, 0) / G.length + SD * SD;
+    const compute = () => {
+      curves = NS.map((n, j) => { let a = 0, b = 0; for (let q = 0; q < R; q++) { const [xs, ys] = sample(n, 100 * j + q + 1); a += err(fitSimple(xs, ys)); b += err(fitFlex(xs, ys)); } return [Math.log10(n), a / R, b / R]; });
+    };
+    const top = el("div", { class: "mlw-pair" }, box);
+    const L = plot(el("div", { class: "mlw-col mlw-col-narrow" }, top), [0, 1], [-1.8, 2.3], { ratio: 0.8, maxWidth: 340 });
+    const P = plot(el("div", { class: "mlw-col" }, top), [0.9, 3.5], [0, 1], { ratio: 0.72, maxWidth: 460 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), n = NS[sel], [xs, ys] = sample(n, 100 * sel + 1), gs = fitSimple(xs, ys), gf = fitFlex(xs, ys);
+      L.clear(); L.axes("x", "y", ticks(0, 1, 2), ticks(-1, 2, 3));
+      L.clip(() => {
+        const step = Math.max(1, Math.floor(n / 300)); for (let i = 0; i < n; i += step) L.dot(xs[i], ys[i], k.grid, 2.2);
+        L.line(G.map((x) => [x, f(x)]), k.muted, 1.6, [5, 4]); L.line(G.map((x) => [x, gs(x)]), k.a, 2.4); L.line(G.map((x) => [x, gf(x)]), k.r, 2.2);
+      });
+      const ymax = Math.min(1.2, Math.ceil(1.1 * Math.max(...curves.map((c) => Math.max(c[1], c[2]))) * 5) / 5); P.yr = [0, ymax];
+      P.clear(); P.axes("training set size n (log scale)", "test MSE", [], ticks(0, ymax, Math.round(ymax / 0.2)));
+      NS.forEach((m) => P.text(String(m), P.X(Math.log10(m)), P.h - P.pad.b + 10, k.muted, "center"));
+      P.clip(() => {
+        P.line([[0.9, SD * SD], [3.5, SD * SD]], k.muted, 1.2, [3, 3]);
+        P.line(curves.map((c) => [c[0], c[1]]), k.a, 2.4); P.line(curves.map((c) => [c[0], c[2]]), k.r, 2.4);
+        curves.forEach((c) => { P.dot(c[0], c[1], k.a, 3.5); P.dot(c[0], c[2], k.r, 3.5); });
+        P.line([[Math.log10(n), 0], [Math.log10(n), ymax]], k.g, 1.4, [4, 3]);
+      });
+      P.text("simple model", P.w - 20, 20, k.a, "right"); P.text("flexible model", P.w - 20, 38, k.r, "right"); P.text("noise floor", P.w - 20, P.Y(SD * SD) - 9, k.muted, "right");
+      const cs = curves[sel], win = cs[1] < cs[2] ? "the <b>simple</b> model wins" : "the <b>flexible</b> model wins";
+      out.innerHTML = `Simple model: a cubic, 4 parameters (blue). Flexible model: a local average of the √n nearest points, standing in for a large network (red). ` +
+        `At n = ${n}: test MSE ${cs[1].toFixed(3)} (simple) and ${cs[2].toFixed(3)} (flexible), so ${win}. ` +
+        `The flexible model keeps improving as data grow; the simple one stops at its bias. With a simple pattern (few wiggles) the simple model is hard to beat.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "training set size n", 0, NS.length - 1, 1, sel, (s) => String(NS[s]), (s) => { sel = s; draw(); });
+    slider(c, "wiggles in the true pattern", 0.25, 4, 0.25, cyc, (s) => s.toFixed(2), (s) => { cyc = s; compute(); draw(); });
+    compute(); draw(); return draw;
+  };
+
+  // 37. The same network, a different seed: report the spread
+  W.seeds = (box) => {
+    const D = moons(3, 240, 0.32), T = moons(4, 1000, 0.32);
+    let runs = [], last = null, rival = null;
+    const top = el("div", { class: "mlw-pair" }, box);
+    const L = plot(el("div", { class: "mlw-col mlw-col-narrow" }, top), [-1.6, 2.6], [-1.2, 1.7], { ratio: 0.8, maxWidth: 330 });
+    const Q = plot(el("div", { class: "mlw-col" }, top), [80, 90], [0, 1], { ratio: 0.5, maxWidth: 460 });
+    const out = readout(box);
+    const train = () => {
+      const s = runs.length, f = trainMLP(D, 5, 1000 + 7 * s, 12, 16, 0.02);
+      const acc = 100 * T.filter((d) => (f(d.x) > 0.5 ? 1 : 0) === d.y).length / T.length;
+      runs.push({ s, acc, j: 0.15 + 0.7 * rng(77 + s)() }); last = f;
+      if (rival === null) { rival = +(acc + 1.6).toFixed(1); rivS.value = rival; rivS.dispatchEvent(new Event("input")); }
+    };
+    const draw = () => {
+      const k = C(); L.clear(); L.axes("", "", [], []);
+      if (last) regions(L, (x) => (last(x) > 0.5 ? 1 : 0), 60, 45);
+      D.forEach((d) => L.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 2.2));
+      const a = runs.map((r) => r.acc), n = a.length, mean = a.reduce((s, v) => s + v, 0) / n, sd = n > 1 ? Math.sqrt(a.reduce((s, v) => s + (v - mean) ** 2, 0) / (n - 1)) : 0;
+      let lo = Math.min(...a, rival) - 1, hi = Math.max(...a, rival) + 1; if (hi - lo < 4) { const m = (hi + lo) / 2; lo = m - 2; hi = m + 2; }
+      Q.xr = [Math.floor(lo), Math.ceil(hi)]; Q.clear(); Q.axes("test accuracy (%)", "", ticks(Q.xr[0], Q.xr[1], Math.min(8, Q.xr[1] - Q.xr[0])), []);
+      Q.clip(() => {
+        if (n > 1) { const c = Q.ctx; c.fillStyle = k.fillB; c.fillRect(Q.X(mean - sd), Q.Y(1), Q.X(mean + sd) - Q.X(mean - sd), Q.Y(0) - Q.Y(1)); }
+        Q.line([[mean, 0], [mean, 1]], k.b, 2.2);
+        Q.line([[rival, 0], [rival, 1]], k.g, 2, [5, 4]);
+        runs.forEach((r, i) => Q.dot(r.acc, r.j, i === n - 1 ? k.r : k.a, i === n - 1 ? 5.5 : 4));
+      });
+      Q.text("rival (one run)", Q.X(rival) + 5, 16, k.g);
+      const verdict = n < 2 ? "Train a few more seeds to see the spread." : Math.abs(rival - mean) <= sd ? `The rival's ${rival.toFixed(1)}% lies within one standard deviation of our mean: <b>from one run we cannot say it is better or worse</b>.` :
+        `The rival's ${rival.toFixed(1)}% is more than one standard deviation from our mean, ${rival > mean ? "a hint that it is better" : "a hint that it is worse"}; it should still be run over several seeds too.`;
+      out.innerHTML = `Each dot is the same network (5 hidden units, the same data and the same 12 epochs) trained with a different random seed; red is the latest (seed ${runs[n - 1].s}, ${runs[n - 1].acc.toFixed(1)}%). ` +
+        `Over <b>${n}</b> seed${n > 1 ? "s" : ""}: accuracy = <b>${mean.toFixed(1)}${n > 1 ? " ± " + sd.toFixed(1) : ""}%</b> (orange line and band: mean ± one standard deviation). ${verdict}`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    button(c, "Train with a new seed", () => { train(); draw(); });
+    button(c, "Train 10 more", () => { for (let i = 0; i < 10; i++) train(); draw(); });
+    button(c, "Start again", () => { runs = []; train(); draw(); });
+    const rivS = slider(c, "rival's single-run accuracy", 70, 100, 0.1, 90, (s) => s.toFixed(1) + "%", (s) => { rival = s; if (runs.length) draw(); });
+    for (let i = 0; i < 5; i++) train(); draw(); return draw;
+  };
+
+  // 38. The course in one picture: six methods on the same data
+  W.gallery = (box) => {
+    let seed = 7, noise = 0.25, D = [], T = [], fits = {}, method = "neural network (16 hidden units)";
+    const METHODS = {
+      "logistic regression": () => {
+        let w = [0, 0, 0];
+        for (let it = 0; it < 3000; it++) { const g = [0, 0, 0]; D.forEach((d) => { const e = 1 / (1 + Math.exp(-(w[0] + w[1] * d.x[0] + w[2] * d.x[1]))) - d.y; g[0] += e; g[1] += e * d.x[0]; g[2] += e * d.x[1]; }); w = w.map((v, i) => v - g[i] / D.length); }
+        return (x) => (w[0] + w[1] * x[0] + w[2] * x[1] > 0 ? 1 : 0);
+      },
+      "k-nearest neighbours (k = 15)": () => (x) => {
+        const d = D.map((p) => [(p.x[0] - x[0]) ** 2 + (p.x[1] - x[1]) ** 2, p.y]).sort((a, b) => a[0] - b[0]);
+        let s = 0; for (let i = 0; i < 15; i++) s += d[i][1]; return s > 7.5 ? 1 : 0;
+      },
+      "decision tree (depth 4)": () => growTree(D, D.map((_, i) => i), 4, null, false),
+      "random forest (60 trees)": () => {
+        const rb = rng(seed + 50), trees = [];
+        for (let t = 0; t < 60; t++) trees.push(growTree(D, D.map(() => Math.floor(rb() * D.length)), 8, rb, true));
+        return (x) => (trees.reduce((s, f) => s + f(x), 0) > 30 ? 1 : 0);
+      },
+      "kernel method (RBF kernel)": () => {
+        const g = 3, K = D.map((a) => D.map((b) => Math.exp(-g * ((a.x[0] - b.x[0]) ** 2 + (a.x[1] - b.x[1]) ** 2))));
+        K.forEach((row, i) => { row[i] += 0.3; });
+        const al = solveLin(K, D.map((d) => 2 * d.y - 1));
+        return (x) => (D.reduce((s, d, i) => s + al[i] * Math.exp(-g * ((d.x[0] - x[0]) ** 2 + (d.x[1] - x[1]) ** 2)), 0) > 0 ? 1 : 0);
+      },
+      "neural network (16 hidden units)": () => { const f = trainMLP(D, 16, seed + 9, 1500, D.length, 0.03); return (x) => (f(x) > 0.5 ? 1 : 0); },
+    };
+    const NAMES = Object.keys(METHODS);
+    const make = () => { D = moons(seed, 200, noise); T = moons(seed + 1000, 600, noise); fits = {}; NAMES.forEach((m) => { const f = METHODS[m](); fits[m] = { f, tr: D.filter((d) => f(d.x) === d.y).length / D.length, te: T.filter((d) => f(d.x) === d.y).length / T.length }; }); };
+    const top = el("div", { class: "mlw-pair" }, box);
+    const P = plot(el("div", { class: "mlw-col" }, top), [-1.6, 2.6], [-1.2, 1.7], { ratio: 0.72, maxWidth: 520 });
+    const tbl = el("table", { class: "mlw-cm mlw-loadings" }, el("div", { class: "mlw-col mlw-col-narrow" }, top));
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), F = fits[method]; P.clear(); regions(P, F.f, 84, 58); P.axes("x₁", "x₂", ticks(-1, 2, 3), ticks(-1, 1.5, 5));
+      D.forEach((d) => P.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 3));
+      tbl.innerHTML = "<tr><th>method</th><th>training</th><th>test</th></tr>" + NAMES.map((m) => `<tr${m === method ? ' class="mlw-kept"' : ""}><th style="text-align:left">${m}</th><td>${(100 * fits[m].tr).toFixed(1)}%</td><td><b>${(100 * fits[m].te).toFixed(1)}%</b></td></tr>`).join("");
+      const bestM = NAMES.reduce((a, b) => (fits[b].te > fits[a].te ? b : a));
+      out.innerHTML = `Shaded: the class predicted by <b>${method}</b>. Accuracy on the 200 training points: ${(100 * F.tr).toFixed(1)}%; on 600 new test points: <b>${(100 * F.te).toFixed(1)}%</b>. ` +
+        `Best on test data here: ${bestM}. A straight boundary (logistic regression) cannot follow the moons; the flexible methods can, but a high training accuracy alone proves nothing: judge on the test column.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "method", NAMES, method, (s) => { method = s; draw(); });
+    slider(c, "noise", 0.1, 0.45, 0.01, noise, (s) => s.toFixed(2), (s) => { noise = s; });
+    button(c, "New data", () => { seed++; make(); draw(); });
+    c.querySelectorAll("input[type=range]")[0].addEventListener("change", () => { make(); draw(); });
+    make(); draw(); return draw;
+  };
+
   function start() {
     document.querySelectorAll(".ml-widget[data-widget]").forEach((box) => {
       const name = box.dataset.widget;

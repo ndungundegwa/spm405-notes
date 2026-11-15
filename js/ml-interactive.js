@@ -90,6 +90,24 @@
 
   function readout(box) { return el("div", { class: "mlw-readout" }, box); }
 
+  // a boxed key inside a plot; items are [label, colour, dash, "dot"]; pos: "right", "left", "bottom-right", "bottom-left"
+  function legend(P, items, pos) {
+    const c = P.ctx, k = C(); c.save(); c.font = "12px sans-serif";
+    const w = Math.max(...items.map((it) => c.measureText(it[0]).width)) + 38, h = items.length * 18 + 8;
+    const x0 = (pos || "right").includes("left") ? P.pad.l + 8 : P.w - P.pad.r - w - 6;
+    const y0 = (pos || "").startsWith("bottom") ? P.h - P.pad.b - h - 6 : P.pad.t + 6;
+    c.globalAlpha = 0.9; c.fillStyle = k.bg; c.fillRect(x0, y0, w, h); c.globalAlpha = 1;
+    c.strokeStyle = k.grid; c.lineWidth = 1; c.setLineDash([]); c.strokeRect(x0 + 0.5, y0 + 0.5, w, h);
+    items.forEach(([lab, col, dash, kind], i) => {
+      const y = y0 + 13 + 18 * i;
+      if (kind === "dot") { c.fillStyle = col; c.beginPath(); c.arc(x0 + 16, y, 4.5, 0, 2 * Math.PI); c.fill(); }
+      else if (kind === "box") { c.fillStyle = col; c.fillRect(x0 + 7, y - 5, 18, 10); }
+      else { c.strokeStyle = col; c.lineWidth = 2.6; c.setLineDash(dash || []); c.beginPath(); c.moveTo(x0 + 6, y); c.lineTo(x0 + 26, y); c.stroke(); c.setLineDash([]); }
+      c.fillStyle = k.ink; c.textAlign = "left"; c.textBaseline = "middle"; c.fillText(lab, x0 + 32, y);
+    });
+    c.restore();
+  }
+
   // least squares with a tiny ridge term, for polynomial fits on x in [-1, 1]
   function polyfit(xs, ys, deg, lam) {
     const n = deg + 1, A = Array.from({ length: n }, () => new Array(n).fill(0)), b = new Array(n).fill(0);
@@ -244,7 +262,7 @@
       const trc = [], tec = [];
       for (let d = 1; d <= 12; d++) { const h = polyfit(tr.map((p) => p[0]), tr.map((p) => p[1]), d, lam); trc.push([d, mse(h, tr)]); tec.push([d, mse(h, te)]); }
       Q.clip(() => { Q.line(trc, k.a, 2); Q.line(tec, k.r, 2); Q.line([[deg, 0], [deg, 1]], k.muted, 1, [3, 3]); });
-      Q.text("training", Q.X(8.5), Q.Y(0.08), k.a); Q.text("test", Q.X(8.5), Q.Y(0.9), k.r);
+      legend(Q, [["training", k.a], ["test", k.r]]);
       out.innerHTML = `degree ${deg}${opts.ridge ? `, λ = ${lam.toExponential(1)}` : ""}: training MSE = <b>${mse(g, tr).toFixed(3)}</b>, test MSE = <b>${mse(g, te).toFixed(3)}</b> (noise variance 0.078: no model can beat it on average)`;
     };
     const c = el("div", { class: "mlw-controls" }, box);
@@ -381,7 +399,8 @@
     for (let i = 0; i < 40; i++) X.push([5.5 + 1.6 * r.normal(), 1]);
     const gini = (s) => { if (!s.length) return 0; const p = s.filter((q) => q[1]).length / s.length; return 2 * p * (1 - p); };
     const gain = (t) => { const L = X.filter((q) => q[0] <= t), R = X.filter((q) => q[0] > t); return gini(X) - (L.length * gini(L) + R.length * gini(R)) / X.length; };
-    const P = plot(box, [-2, 10], [0, 0.3], { ratio: 0.55 });
+    const P = plot(box, [-2, 10], [0, 0.3], { ratio: 0.45 });
+    const S = plot(box, [-2, 10], [0, 1], { ratio: 0.12 }); S.pad.t = 2; S.pad.b = 4;
     let t = 1;
     const out = readout(box);
     const draw = () => {
@@ -389,8 +408,13 @@
       const g = []; for (let x = -2; x <= 10; x += 0.02) g.push([x, gain(x)]);
       P.clip(() => {
         P.line(g, k.muted, 2);
-        X.forEach(([x, l], i) => P.dot(x, 0.012 + (l ? 0.03 : 0) + 0.004 * (i % 4), l ? k.a : k.b, 3.5));
         P.line([[t, 0], [t, 0.3]], k.r, 2, [5, 4]);
+      });
+      S.clear(); S.clip(() => {
+        const c = S.ctx; c.fillStyle = k.fillB; c.fillRect(S.X(-2), S.Y(1), S.X(t) - S.X(-2), S.Y(0) - S.Y(1)); c.fillStyle = k.fillA; c.fillRect(S.X(t), S.Y(1), S.X(10) - S.X(t), S.Y(0) - S.Y(1));
+        X.forEach(([x, l], i) => S.dot(x, (l ? 0.3 : 0.7) + 0.06 * ((i % 5) - 2), l ? k.a : k.b, 3.5));
+        S.line([[t, 0], [t, 1]], k.r, 2, [5, 4]);
+        S.text("left", S.X(-2) + 4, S.Y(0.5), k.muted); S.text("right", S.X(10) - 4, S.Y(0.5), k.muted, "right");
       });
       const L = X.filter((q) => q[0] <= t), R = X.filter((q) => q[0] > t);
       out.innerHTML = `cut at ${t.toFixed(2)}: left ${L.length} points (Gini ${gini(L).toFixed(3)}), right ${R.length} points (Gini ${gini(R).toFixed(3)}); gain = <b>${gain(t).toFixed(3)}</b>. Orange: healthy, blue: faulty.`;
@@ -499,10 +523,11 @@
     const draw = () => {
       const k = C(); P.clear(); P.axes("irradiance G (W/m²)", "power P (W)", ticks(0, 1000, 5), ticks(0, 250, 5));
       P.clip(() => {
-        [[15, k.a], [35, k.b], [55, k.r]].forEach(([t, col]) => { P.line([[0, 0], [1000, model(1000, t)]], col, 1.6, [5, 4]); P.text(`${t} °C`, P.X(1000) - 4, P.Y(model(1000, t)) - 8, col, "right"); });
+        [[15, k.a], [35, k.b], [55, k.r]].forEach(([t, col]) => { P.line([[0, 0], [1000, model(1000, t)]], col, 1.6, [5, 4]); });
         data.forEach(([g, t, p]) => P.dot(g, p, k.muted, 3));
         P.dot(G, model(G, T), k.g, 8);
       });
+      legend(P, [["model at 15 °C", k.a, [5, 4]], ["model at 35 °C", k.b, [5, 4]], ["model at 55 °C", k.r, [5, 4]], ["readings", k.muted, null, "dot"], ["your panel", k.g, null, "dot"]], "left");
       const p = model(G, T);
       out.innerHTML = `P = 0.26 · G · [1 − 0.004 (T − 25)] = <b>${p.toFixed(1)} W</b>. A hotter panel gives less power at the same sunlight: at G = ${G.toFixed(0)} W/m² going from 15 °C to 55 °C loses ${(model(G, 15) - model(G, 55)).toFixed(1)} W. Grey dots: 40 real-looking readings.`;
     };
@@ -541,7 +566,7 @@
     button(c, "Draw 100", () => { for (let i = 0; i < 100; i++) one(); draw(); });
     button(c, "Draw 1000", () => { for (let i = 0; i < 1000; i++) one(); draw(); });
     button(c, "Reset", () => { means = []; counts = new Array(n).fill(0); draw(); });
-    draw(); return draw;
+    one(); draw(); return draw;
   };
 
   // 15. k-fold cross-validation picks the polynomial degree
@@ -759,7 +784,7 @@
   // 21. EM for a mixture of two Gaussians (1-D)
   W.em = (box) => {
     const r = rng(61), X = []; for (let i = 0; i < 160; i++) X.push(i < 100 ? 0.45 + 0.13 * r.normal() : 1.15 + 0.1 * r.normal());
-    const P = plot(box, [-0.2, 1.6], [0, 4.5], { ratio: 0.45 });
+    const P = plot(box, [-0.2, 1.6], [-0.9, 4.5], { ratio: 0.5 });
     let mu, sd, pi, it, resp = null;
     const init = () => { mu = [0.2, 1.4]; sd = [0.3, 0.3]; pi = [0.5, 0.5]; it = 0; resp = null; };
     const N = (x, m, s) => Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
@@ -776,7 +801,8 @@
       const bins = new Array(36).fill(0); X.forEach((x) => { const b = Math.floor((x + 0.2) / 0.05); if (b >= 0 && b < 36) bins[b]++; });
       bins.forEach((b, i) => { P.ctx.fillStyle = k.grid; const h = b / (X.length * 0.05); P.ctx.fillRect(P.X(-0.2 + 0.05 * i) + 1, P.Y(h), P.X(0.05) - P.X(0) - 2, P.Y(0) - P.Y(h)); });
       const c0 = [], c1 = []; for (let x = -0.2; x <= 1.6; x += 0.01) { c0.push([x, pi[0] * N(x, mu[0], sd[0])]); c1.push([x, pi[1] * N(x, mu[1], sd[1])]); }
-      P.clip(() => { P.line(c0, k.a, 2.4); P.line(c1, k.b, 2.4); X.forEach((x, i) => P.dot(x, 0.12 + 0.1 * (i % 3), resp ? (resp[i] > 0.5 ? k.a : k.b) : k.muted, 2.6)); });
+      P.clip(() => { P.line(c0, k.a, 2.4); P.line(c1, k.b, 2.4); P.line([[-0.2, 0], [1.6, 0]], k.grid, 1); X.forEach((x, i) => P.dot(x, -0.3 - 0.18 * (i % 3), resp ? (resp[i] > 0.5 ? k.a : k.b) : k.muted, 2.6)); });
+      legend(P, [["population 1", k.a], ["population 2", k.b], ["stars (colour = more likely population)", k.muted, null, "dot"]]);
       out.innerHTML = `iteration ${it}: blue μ = ${mu[0].toFixed(3)}, σ = ${sd[0].toFixed(3)}, weight ${pi[0].toFixed(2)} · orange μ = ${mu[1].toFixed(3)}, σ = ${sd[1].toFixed(3)}, weight ${pi[1].toFixed(2)}. ` +
         `<b>E-step</b>: each star gets a probability of belonging to each population; <b>M-step</b>: refit each bell curve with those weights.`;
     };
@@ -1518,7 +1544,7 @@
       });
       Q.clear(); Q.axes("optimisation step", "MSE", [0, 500, 1000, 1500], ticks(0, 1.2, 4));
       Q.clip(() => { Q.line(hist.map((h) => [h[0], h[1]]), k.a, 2.2); if (showTest) Q.line(hist.map((h) => [h[0], h[2]]), k.r, 2.2, [6, 3]); });
-      Q.text("training", Q.w - 20, 22, k.a, "right"); if (showTest) Q.text("test (dashed)", Q.w - 20, 40, k.r, "right");
+      legend(Q, showTest ? [["training", k.a], ["test", k.r, [6, 3]]] : [["training", k.a]]);
       const h = hist[hist.length - 1];
       out.innerHTML = `<b>1 Representation:</b> each x becomes ${deg + 1} numbers and the model family is ${Object.keys(FAM).find((s) => FAM[s] === deg)} (${deg + 1} parameters). ` +
         `<b>2 Evaluation:</b> training MSE <b>${h[1].toFixed(3)}</b> on the 14 filled points; test MSE <b>${h[2].toFixed(3)}</b> on the 40 hollow points the model never saw. ` +
@@ -1691,7 +1717,7 @@
         P.line(g.map((t) => [t, logl(t)]), k.a, 2.4); P.line(g.map((t) => [t, hinge(t)]), k.r, 2.6);
         P.line([[z, 0], [z, 4]], k.g, 1.4, [4, 3]); P.dot(z, hinge(z), k.r, 5.5); P.dot(z, logl(z), k.a, 5.5);
       });
-      P.text("hinge loss (SVM)", P.X(1.15), P.Y(3.75), k.r); P.text("log loss (logistic regression)", P.X(1.15), P.Y(3.35), k.a); P.text("0–1 loss (counts errors)", P.X(1.15), P.Y(2.95), k.muted);
+      legend(P, [["hinge loss (SVM)", k.r], ["log loss (logistic regression)", k.a], ["0–1 loss (counts errors)", k.muted, [5, 4]]]);
       S.clear(); const c = S.ctx;
       c.fillStyle = rgba(k.g, 0.15); c.fillRect(S.X(-1), S.Y(1), S.X(1) - S.X(-1), S.Y(0) - S.Y(1));
       S.line([[0, 0], [0, 1]], k.ink, 2); S.line([[-1, 0], [-1, 1]], k.g, 1.2, [4, 3]); S.line([[1, 0], [1, 1]], k.g, 1.2, [4, 3]);
@@ -1779,7 +1805,7 @@
         curves.forEach((c) => { P.dot(c[0], c[1], k.a, 3.5); P.dot(c[0], c[2], k.r, 3.5); });
         P.line([[Math.log10(n), 0], [Math.log10(n), ymax]], k.g, 1.4, [4, 3]);
       });
-      P.text("simple model", P.w - 20, 20, k.a, "right"); P.text("flexible model", P.w - 20, 38, k.r, "right"); P.text("noise floor", P.w - 20, P.Y(SD * SD) - 9, k.muted, "right");
+      legend(P, [["simple model", k.a], ["flexible model", k.r], ["noise floor", k.muted, [3, 3]]]);
       const cs = curves[sel], win = cs[1] < cs[2] ? "the <b>simple</b> model wins" : "the <b>flexible</b> model wins";
       out.innerHTML = `Simple model: a cubic, 4 parameters (blue). Flexible model: a local average of the √n nearest points, standing in for a large network (red). ` +
         `At n = ${n}: test MSE ${cs[1].toFixed(3)} (simple) and ${cs[2].toFixed(3)} (flexible), so ${win}. ` +
@@ -1879,6 +1905,972 @@
     button(c, "New data", () => { seed++; make(); draw(); });
     c.querySelectorAll("input[type=range]")[0].addEventListener("change", () => { make(); draw(); });
     make(); draw(); return draw;
+  };
+
+  // ------------------------------------------------------------------ second-demo widgets (39–63)
+  function lineEq(P, a, b, c0, col, w, dash) {   // draw the line a·x + b·y + c0 = 0 across the plot
+    if (Math.abs(b) > Math.abs(a)) P.line(P.xr.map((x) => [x, -(a * x + c0) / b]), col, w, dash);
+    else if (Math.abs(a) > 1e-12) P.line(P.yr.map((y) => [-(b * y + c0) / a, y]), col, w, dash);
+  }
+  function gauss2(r, n, m, L) {                  // n points from a 2-D normal with mean m and Cholesky factor L
+    const out = []; for (let i = 0; i < n; i++) { const z1 = r.normal(), z2 = r.normal(); out.push([m[0] + L[0][0] * z1, m[1] + L[1][0] * z1 + L[1][1] * z2]); }
+    return out;
+  }
+  function hist(P, vals, lo, hi, nb, fill, stroke, scale) {   // a histogram drawn as bars (density scale if scale given)
+    const h = new Array(nb).fill(0), bw = (hi - lo) / nb;
+    vals.forEach((v) => { const i = Math.floor((v - lo) / bw); if (i >= 0 && i < nb) h[i]++; });
+    const c = P.ctx, s = scale || 1;
+    h.forEach((n, i) => { if (!n) return; const x0 = P.X(lo + i * bw), x1 = P.X(lo + (i + 1) * bw), y = P.Y(n * s); c.fillStyle = fill; c.fillRect(x0 + 0.5, y, x1 - x0 - 1, P.Y(0) - y); if (stroke) { c.strokeStyle = stroke; c.lineWidth = 1; c.strokeRect(x0 + 0.5, y, x1 - x0 - 1, P.Y(0) - y); } });
+    return h;
+  }
+  const PAL = (k) => [k.a, k.b, k.g, k.r, k.muted, "#8e44ad"];
+
+  // 39. Likelihood: how probable are the data under a Gaussian with mean μ?
+  W.likelihood = (box) => {
+    const r = rng(5), data = []; for (let i = 0; i < 8; i++) data.push(2 + 0.8 * r.normal());
+    const mean = data.reduce((a, b) => a + b, 0) / data.length;
+    let mu = 0.8, sd = 0.8, stop = null;
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const P = plot(L, [-1, 5], [0, 0.8], { ratio: 0.72, maxWidth: 430 }), Q = plot(R, [-1, 5], [-40, 0], { ratio: 0.72, maxWidth: 330 });
+    Q.pad.l = 50;
+    const pdf = (x, m) => Math.exp(-0.5 * ((x - m) / sd) ** 2) / (sd * Math.sqrt(2 * Math.PI));
+    const ll = (m) => data.reduce((s, x) => s + Math.log(pdf(x, m)), 0);
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), g = []; for (let x = -1; x <= 5.0001; x += 0.02) g.push(x);
+      P.yr = [0, Math.max(0.8, 1.15 / (sd * Math.sqrt(2 * Math.PI)))];
+      P.clear(); P.axes("measurement x", "probability density", ticks(-1, 5, 6), ticks(0, P.yr[1] > 1 ? 1.6 : 0.8, 4));
+      P.clip(() => {
+        P.line(g.map((x) => [x, pdf(x, mu)]), k.a, 2.4);
+        data.forEach((x) => { P.line([[x, 0], [x, pdf(x, mu)]], k.g, 2.2); P.dot(x, pdf(x, mu), k.g, 3.5); P.dot(x, 0, k.ink, 4.5); });
+      });
+      legend(P, [["model: normal(μ, σ)", k.a], ["density at each point", k.g], ["measurements", k.ink, null, "dot"]], "right");
+      const best = ll(mean), hi = Math.ceil((best + 2) / 5) * 5;
+      Q.yr = [hi - 40, hi];
+      Q.clear(); Q.axes("mean μ", "log-likelihood", ticks(-1, 5, 6), ticks(hi - 40, hi, 4));
+      Q.clip(() => {
+        Q.line([[mean, hi - 40], [mean, hi]], k.grid, 1.2, [4, 3]);
+        Q.line(g.map((m) => [m, ll(m)]), k.r, 2.4); Q.dot(mu, ll(mu), k.a, 6);
+      });
+      Q.text("best μ", Q.X(mean) + 5, Q.Y(hi) + 10, k.muted);
+      const prod = data.reduce((p, x) => p * pdf(x, mu), 1);
+      out.innerHTML = `μ = <b>${mu.toFixed(2)}</b>, σ = ${sd.toFixed(2)}. Likelihood L = product of the 8 green heights = <b>${prod.toExponential(2)}</b>; ` +
+        `log L = sum of their logs = <b>${ll(mu).toFixed(2)}</b>. The largest log L is at μ = ${mean.toFixed(2)}, the sample mean: ` +
+        `that is the maximum-likelihood estimate. A point far from the curve has a tiny height and drags the product down.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    const sM = slider(c, "mean μ", -1, 5, 0.01, mu, (v) => v.toFixed(2), (v) => { if (stop) stop(); mu = v; draw(); });
+    slider(c, "spread σ", 0.3, 2, 0.01, sd, (v) => v.toFixed(2), (v) => { sd = v; draw(); });
+    button(c, "Find the best μ", () => { if (stop) stop(); const m0 = mu; stop = animate(900, (t) => { mu = m0 + (mean - m0) * t; sM.value = mu; sM.nextSibling.textContent = mu.toFixed(2); draw(); }); });
+    draw(); return draw;
+  };
+
+  // 40. Rare positives: precision collapses when the positive class is rare
+  W.imbalance = (box) => {
+    let lp = Math.log10(0.5), thr = 1, sep = 2.5;
+    const P = plot(box, [-4, 5], [0, 0.45], { ratio: 0.42, maxWidth: 680 }), S = plot(box, [0, 1], [0, 1], { ratio: 0.12, maxWidth: 680 });
+    S.pad = { l: 46, r: 14, t: 4, b: 18 };
+    const pdf = (x, m) => Math.exp(-0.5 * (x - m) ** 2) / Math.sqrt(2 * Math.PI);
+    function erf(x) { const t = 1 / (1 + 0.3275911 * Math.abs(x)); const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x); return x >= 0 ? y : -y; }
+    const sf = (x) => 0.5 * (1 - erf(x / Math.SQRT2));
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), pi = Math.pow(10, lp), m1 = sep, g = []; for (let x = -4; x <= 5.0001; x += 0.03) g.push(x);
+      P.yr = [0, 0.42 * Math.max(1 - pi, pi) * 1.08];
+      P.clear(); P.axes("classifier score", "number of events (scaled)", ticks(-4, 5, 9), []);
+      const c = P.ctx;
+      [[0, 1 - pi, k.fillB, k.b], [m1, pi, k.fillA, k.a]].forEach(([m, w, f, s]) => {
+        c.fillStyle = f; c.beginPath(); c.moveTo(P.X(thr), P.Y(0)); g.filter((x) => x >= thr).forEach((x) => c.lineTo(P.X(x), P.Y(w * pdf(x, m)))); c.lineTo(P.X(5), P.Y(0)); c.fill();
+        P.line(g.map((x) => [x, w * pdf(x, m)]), s, 2.2);
+      });
+      P.line([[thr, 0], [thr, P.yr[1]]], k.r, 2, [5, 4]);
+      legend(P, [["negatives (background)", k.b], ["positives (signal)", k.a], ["threshold: flag if score above", k.r, [5, 4]]], "right");
+      const N = 100000, TP = pi * N * sf(thr - m1), FP = (1 - pi) * N * sf(thr), FN = pi * N - TP, prec = TP / Math.max(1e-9, TP + FP), rec = TP / (pi * N);
+      S.clear(); const s = S.ctx, f = TP + FP > 0 ? TP / (TP + FP) : 0;
+      s.fillStyle = k.a; s.fillRect(S.X(0), S.Y(1), S.X(f) - S.X(0), S.Y(0) - S.Y(1));
+      s.fillStyle = k.b; s.fillRect(S.X(f), S.Y(1), S.X(1) - S.X(f), S.Y(0) - S.Y(1));
+      s.fillStyle = k.ink; s.font = "12px sans-serif"; s.textAlign = "right"; s.textBaseline = "middle"; s.fillText("flagged", S.pad.l - 4, S.Y(0.5));
+      s.textAlign = "left"; s.fillStyle = "#fff"; if (f > 0.18) s.fillText(`real signal ${(100 * f).toFixed(0)}%`, S.X(0) + 6, S.Y(0.5));
+      s.textAlign = "right"; if (f < 0.82) s.fillText(`false alarms ${(100 * (1 - f)).toFixed(0)}%`, S.X(1) - 6, S.Y(0.5));
+      out.innerHTML = `Positives make up <b>${(100 * pi).toPrecision(2)}%</b> of the events. Out of 100 000 events the classifier flags ${Math.round(TP + FP).toLocaleString()}: ` +
+        `${Math.round(TP).toLocaleString()} real (TP) and ${Math.round(FP).toLocaleString()} false alarms (FP); ${Math.round(FN).toLocaleString()} positives are missed (FN). ` +
+        `Recall (efficiency) = <b>${rec.toFixed(3)}</b> does not depend on how rare the positives are; precision (purity) = <b>${prec.toFixed(3)}</b> does. ` +
+        (pi < 0.02 ? "With rare positives even a small false-positive rate swamps the signal: raise the threshold or report precision as well as accuracy." : "Now make the positives rare and watch the precision fall while the recall stays put.");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "share of positives", -3, Math.log10(0.5), 0.01, lp, (v) => (100 * Math.pow(10, v)).toPrecision(2) + "%", (v) => { lp = v; draw(); });
+    slider(c, "threshold", -2, 5, 0.01, thr, (v) => v.toFixed(2), (v) => { thr = v; draw(); });
+    slider(c, "class separation", 0.5, 4, 0.05, sep, (v) => v.toFixed(2), (v) => { sep = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 41. Logistic regression with two inputs, trained by gradient descent
+  W.logreg = (box, opts) => {
+    const r = rng(41), D = [];
+    gauss2(r, 60, [-0.8, -0.5], [[0.8, 0], [0.25, 0.7]]).forEach((x) => D.push({ x, y: 0 }));
+    gauss2(r, 60, [0.9, 0.7], [[0.8, 0], [0.3, 0.75]]).forEach((x) => D.push({ x, y: 1 }));
+    const xl = opts.xlabel || "input x₁", yl = opts.ylabel || "input x₂";
+    let b = [0, 0.3, -1.0], it = 0, lr = 0.5, shade = true, running = false;
+    const P = plot(box, [-3, 3], [-2.6, 2.6], { ratio: 0.72, maxWidth: 600 });
+    const sig = (z) => 1 / (1 + Math.exp(-z)), p = (x) => sig(b[0] + b[1] * x[0] + b[2] * x[1]);
+    const cost = () => -D.reduce((s, d) => { const q = Math.min(1 - 1e-12, Math.max(1e-12, p(d.x))); return s + (d.y ? Math.log(q) : Math.log(1 - q)); }, 0) / D.length;
+    const step = () => { const g = [0, 0, 0]; D.forEach((d) => { const e = p(d.x) - d.y; g[0] += e; g[1] += e * d.x[0]; g[2] += e * d.x[1]; }); for (let j = 0; j < 3; j++) b[j] -= lr * g[j] / D.length; it++; };
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); P.clear();
+      if (shade) {
+        const c = P.ctx, nx = 60, ny = 52, cw = (P.X(3) - P.X(-3)) / nx, ch = (P.Y(-2.6) - P.Y(2.6)) / ny;
+        for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+          const q = p([-3 + (i + 0.5) * 6 / nx, 2.6 - (j + 0.5) * 5.2 / ny]);
+          c.fillStyle = q > 0.5 ? rgba(k.b, 0.3 * (q - 0.5) * 2) : rgba(k.a, 0.3 * (0.5 - q) * 2); c.fillRect(P.X(-3) + i * cw, P.Y(2.6) + j * ch, cw + 0.6, ch + 0.6);
+        }
+      }
+      P.axes(xl, yl, ticks(-3, 3, 6), ticks(-2, 2, 4));
+      P.clip(() => {
+        const L = Math.log(9);
+        lineEq(P, b[1], b[2], b[0] - L, k.muted, 1.2, [4, 3]); lineEq(P, b[1], b[2], b[0] + L, k.muted, 1.2, [4, 3]);
+        lineEq(P, b[1], b[2], b[0], k.ink, 2.6);
+        D.forEach((d) => P.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 3.6));
+      });
+      legend(P, [["class 0", k.a, null, "dot"], ["class 1", k.b, null, "dot"], ["boundary p = 0.5", k.ink], ["p = 0.1 and p = 0.9", k.muted, [4, 3]]], "bottom-right");
+      const acc = D.filter((d) => (p(d.x) > 0.5) === !!d.y).length / D.length;
+      out.innerHTML = `Step ${it}: β₀ = ${b[0].toFixed(2)}, β₁ = ${b[1].toFixed(2)}, β₂ = ${b[2].toFixed(2)}. Cross-entropy cost = <b>${cost().toFixed(3)}</b>, training accuracy = <b>${(100 * acc).toFixed(0)}%</b>. ` +
+        `The boundary is the line β₀ + β₁x₁ + β₂x₂ = 0; the shading is the predicted probability. As training goes on the dashed lines close in: the model grows more confident.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "learning rate α", 0.05, 3, 0.05, lr, (v) => v.toFixed(2), (v) => { lr = v; });
+    button(c, "One step", () => { step(); draw(); });
+    const runB = button(c, "Train", () => {
+      if (running) { running = false; runB.textContent = "Train"; return; }
+      running = true; runB.textContent = "Stop"; let n = 0;
+      const f = () => { if (!running) return; step(); step(); n += 2; draw(); if (n < 300) requestAnimationFrame(f); else { running = false; runB.textContent = "Train"; } };
+      requestAnimationFrame(f);
+    });
+    button(c, "Reset", () => { running = false; runB.textContent = "Train"; b = [0, 0.3, -1.0]; it = 0; draw(); });
+    checkbox(c, "show probability shading", shade, (v) => { shade = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 42. Two inputs: the least-squares plane in 3-D, with residuals
+  W.plane3d = (box) => {
+    const r = rng(42), D = [];
+    for (let i = 0; i < 30; i++) { const a = -1 + 2 * r(), b = -1 + 2 * r(); D.push([a, b, 0.3 + 0.7 * a - 0.5 * b + 0.18 * r.normal()]); }
+    const fit = lsq(D.map((d) => [1, d[0], d[1]]), D.map((d) => d[2]));
+    let B = [0.3, 0, 0], stop = null;
+    const V = view3d(box, { ratio: 0.7, maxWidth: 560, scale: 0.3, yaw: -0.6, pitch: 0.35 });
+    const out = readout(box);
+    const f = (a, b) => B[0] + B[1] * a + B[2] * b;
+    const draw = () => {
+      const k = C(); V.clear(); V.axes(1.25, ["x₁", "x₂", "y"]);
+      for (let i = 0; i <= 8; i++) { const t = -1 + i / 4; V.line([t, -1, f(t, -1)], [t, 1, f(t, 1)], rgba(k.a, 0.45), 1); V.line([-1, t, f(-1, t)], [1, t, f(1, t)], rgba(k.a, 0.45), 1); }
+      V.poly([[-1, -1, f(-1, -1)], [1, -1, f(1, -1)], [1, 1, f(1, 1)], [-1, 1, f(-1, 1)]], rgba(k.a, 0.1));
+      const pts = D.map((d) => ({ d, z: V.proj(d)[2] })).sort((p, q) => q.z - p.z);
+      pts.forEach(({ d }) => { const e = d[2] - f(d[0], d[1]); V.line([d[0], d[1], f(d[0], d[1])], d, e > 0 ? k.g : k.r, 1.6); V.dot(d, k.ink, 3.4); });
+      const rss = D.reduce((s, d) => s + (d[2] - f(d[0], d[1])) ** 2, 0), best = D.reduce((s, d) => s + (d[2] - fit[0] - fit[1] * d[0] - fit[2] * d[1]) ** 2, 0);
+      out.innerHTML = `Plane ŷ = ${B[0].toFixed(2)} + ${B[1].toFixed(2)}·x₁ ${B[2] < 0 ? "−" : "+"} ${Math.abs(B[2]).toFixed(2)}·x₂. RSS = <b>${rss.toFixed(3)}</b> (smallest possible: ${best.toFixed(3)}). ` +
+        `Green sticks: points above the plane; red: below. Drag the picture to turn it: seen edge-on the plane becomes a line, and each slope is the tilt along one axis.`;
+    };
+    V.redraw = draw;
+    const c = el("div", { class: "mlw-controls" }, box), S = [];
+    S.push(slider(c, "intercept β₀", -1, 1.5, 0.01, B[0], (v) => v.toFixed(2), (v) => { B[0] = v; draw(); }));
+    S.push(slider(c, "slope β₁ (along x₁)", -1.5, 1.5, 0.01, B[1], (v) => v.toFixed(2), (v) => { B[1] = v; draw(); }));
+    S.push(slider(c, "slope β₂ (along x₂)", -1.5, 1.5, 0.01, B[2], (v) => v.toFixed(2), (v) => { B[2] = v; draw(); }));
+    button(c, "Least squares", () => { if (stop) stop(); const b0 = B.slice(); stop = animate(1000, (t) => { B = b0.map((v, i) => v + (fit[i] - v) * t); B.forEach((v, i) => { S[i].value = v; S[i].nextSibling.textContent = v.toFixed(2); }); draw(); }); });
+    checkbox(c, "spin", false, (v) => (v ? V.spin() : V.stopSpin()));
+    draw(); return draw;
+  };
+
+  // 43. Boosting: small trees (stumps) added one at a time, each fitted to what is left over
+  W.boosting = (box) => {
+    const r = rng(43), truth = (x) => Math.sin(6 * x) + 2 * x * x, tr = [], te = [];
+    for (let i = 0; i < 60; i++) { const x = r(); tr.push([x, truth(x) + 0.3 * r.normal()]); }
+    for (let i = 0; i < 300; i++) { const x = r(); te.push([x, truth(x) + 0.3 * r.normal()]); }
+    let nu = 0.3, stumps = [], last = null;
+    const F = (x) => stumps.reduce((s, [c, a, b]) => s + (x <= c ? a : b), 0);
+    const fitStump = (res) => {
+      const s = tr.map((p, i) => [p[0], res[i]]).sort((p, q) => p[0] - q[0]), n = s.length, tot = s.reduce((a, p) => a + p[1], 0);
+      let best = null, bs = Infinity, left = 0;
+      for (let i = 0; i < n - 1; i++) { left += s[i][1]; const nl = i + 1, a = left / nl, b = (tot - left) / (n - nl), sse = -(nl * a * a + (n - nl) * b * b); if (sse < bs) { bs = sse; best = [(s[i][0] + s[i + 1][0]) / 2, a, b]; } }
+      return best;
+    };
+    const add = (m) => { for (let q = 0; q < m; q++) { const res = tr.map((p) => p[1] - F(p[0])), s = fitStump(res); last = s; stumps.push([s[0], nu * s[1], nu * s[2]]); } };
+    const P = plot(box, [0, 1], [-1.5, 3.2], { ratio: 0.42, maxWidth: 680 }), Q = plot(box, [0, 1], [-1.6, 1.6], { ratio: 0.26, maxWidth: 680 });
+    const out = readout(box), G = []; for (let i = 0; i <= 400; i++) G.push(i / 400);
+    const mse = (D) => D.reduce((s, p) => s + (p[1] - F(p[0])) ** 2, 0) / D.length;
+    const draw = () => {
+      const k = C();
+      P.clear(); P.axes("", "y", [], ticks(-1, 3, 4));
+      P.clip(() => { P.line(G.map((x) => [x, truth(x)]), k.muted, 1.4, [5, 4]); tr.forEach((p) => P.dot(p[0], p[1], k.ink, 3)); P.line(G.map((x) => [x, F(x)]), k.r, 2.4); });
+      legend(P, [["data", k.ink, null, "dot"], ["true pattern", k.muted, [5, 4]], [`boosted model (${stumps.length} stumps)`, k.r]], "left");
+      Q.clear(); Q.axes("x", "left over", ticks(0, 1, 5), [-1, 0, 1]);
+      Q.clip(() => {
+        Q.line([[0, 0], [1, 0]], k.grid, 1);
+        const pr = stumps.length ? stumps.slice(0, -1).reduce((f, [c, a, b]) => (x) => f(x) + (x <= c ? a : b), () => 0) : () => 0;
+        tr.forEach((p) => Q.dot(p[0], p[1] - pr(p[0]), k.ink, 2.6));
+        if (last) Q.line(G.map((x) => [x, x <= last[0] ? last[1] : last[2]]), k.g, 2.4);
+      });
+      if (last) legend(Q, [["residuals before the newest stump", k.ink, null, "dot"], ["newest stump, fitted to them", k.g]], "right");
+      out.innerHTML = `${stumps.length} stumps, learning rate ν = ${nu.toFixed(2)}. Training MSE = <b>${mse(tr).toFixed(3)}</b>, test MSE = <b>${mse(te).toFixed(3)}</b> (noise variance 0.09). ` +
+        `Each stump is one split; it is fitted to the residuals and only a fraction ν of it is added. Many small corrections build a flexible curve. ` +
+        (stumps.length > 150 ? "Keep going and the training error still falls while the test error stops improving or rises: the number of trees is chosen by cross-validation." : "");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "learning rate ν", 0.05, 1, 0.05, nu, (v) => v.toFixed(2), (v) => { nu = v; });
+    button(c, "Add one stump", () => { add(1); draw(); });
+    button(c, "Add ten", () => { add(10); draw(); });
+    button(c, "Add a hundred", () => { add(100); draw(); });
+    button(c, "Start again", () => { stumps = []; last = null; draw(); });
+    add(3); draw(); return draw;
+  };
+
+  // 44. Distance from normal: Euclidean versus Mahalanobis
+  W.mahalanobis = (box) => {
+    const r = rng(44), rho = 0.9, D = gauss2(r, 250, [0, 0], [[1, 0], [rho, Math.sqrt(1 - rho * rho)]]);
+    const m = [0, 0], S = [[0, 0], [0, 0]]; D.forEach((p) => { m[0] += p[0] / D.length; m[1] += p[1] / D.length; });
+    D.forEach((p) => { const a = p[0] - m[0], b = p[1] - m[1]; S[0][0] += a * a / (D.length - 1); S[0][1] += a * b / (D.length - 1); S[1][1] += b * b / (D.length - 1); }); S[1][0] = S[0][1];
+    const E = eigSym(S), det = S[0][0] * S[1][1] - S[0][1] ** 2, Si = [[S[1][1] / det, -S[0][1] / det], [-S[0][1] / det, S[0][0] / det]];
+    const maha = (x) => { const a = x[0] - m[0], b = x[1] - m[1]; return Math.sqrt(a * (Si[0][0] * a + Si[0][1] * b) + b * (Si[1][0] * a + Si[1][1] * b)); };
+    const eu = (x) => Math.hypot(x[0] - m[0], x[1] - m[1]);
+    let pt = [2.2, 2.0], cut = 3;
+    const P = plot(box, [-4, 4], [-3.3, 3.3], { ratio: 0.72, maxWidth: 580 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("sensor 1 (standardised)", "sensor 2 (standardised)", ticks(-4, 4, 8), ticks(-3, 3, 6));
+      P.clip(() => {
+        D.forEach((p) => P.dot(p[0], p[1], rgba(k.a, 0.55), 2.6));
+        [1, 2, cut].forEach((d, i) => {
+          const pts = []; for (let t = 0; t <= 2 * Math.PI + 0.01; t += 0.05) { const a = d * Math.sqrt(E.vals[0]) * Math.cos(t), b = d * Math.sqrt(E.vals[1]) * Math.sin(t); pts.push([m[0] + a * E.vecs[0][0] + b * E.vecs[1][0], m[1] + a * E.vecs[0][1] + b * E.vecs[1][1]]); }
+          P.line(pts, i === 2 ? k.r : k.muted, i === 2 ? 2.2 : 1.2, i === 2 ? [] : [4, 3]);
+        });
+        const re = eu(pt), circ = []; for (let t = 0; t <= 2 * Math.PI + 0.01; t += 0.05) circ.push([m[0] + re * Math.cos(t), m[1] + re * Math.sin(t)]);
+        P.line(circ, k.g, 1.4, [2, 3]);
+        P.line([m, pt], k.g, 1.4); P.dot(pt[0], pt[1], maha(pt) > cut ? k.r : k.ink, 6.5);
+      });
+      legend(P, [["normal readings", k.a, null, "dot"], ["Mahalanobis distance 1 and 2", k.muted, [4, 3]], [`alarm boundary (distance ${cut.toFixed(1)})`, k.r], ["circle of the same Euclidean distance", k.g, [2, 3]]], "bottom-right");
+      const dm = maha(pt);
+      out.innerHTML = `New reading at (${pt[0].toFixed(2)}, ${pt[1].toFixed(2)}): Euclidean distance from the centre <b>${eu(pt).toFixed(2)}</b>, Mahalanobis distance <b>${dm.toFixed(2)}</b> → ` +
+        (dm > cut ? `<b style="color:${k.r}">anomaly</b>.` : "normal.") + ` The two sensors move together (correlation ${rho}), so a reading along the cloud is ordinary even when far out, while a reading across it is suspicious even when close. ` +
+        `Mahalanobis distance measures distance in units of the spread in each direction: the ellipses, not circles, are the lines of equal "strangeness".`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "alarm at distance", 1.5, 5, 0.1, cut, (v) => v.toFixed(1), (v) => { cut = v; draw(); });
+    button(c, "Far, but along the cloud", () => { pt = [2.2, 2.0]; draw(); });
+    button(c, "Close, but across it", () => { pt = [0.9, -0.9]; draw(); });
+    const move = (e) => { const rc = P.cv.getBoundingClientRect(); pt = [P.invX(e.clientX - rc.left), P.invY(e.clientY - rc.top)]; draw(); };
+    P.cv.addEventListener("click", move);
+    el("div", { class: "mlw-hint" }, box, "Click anywhere on the plot to place a new reading.");
+    draw(); return draw;
+  };
+
+  // 45. A generative model: learn a distribution from data, then draw new samples from it
+  W.generate = (box) => {
+    const r = rng(45), draw1 = (rr) => (rr() < 0.6 ? -1.2 + 0.5 * rr.normal() : 1.5 + 0.8 * rr.normal());
+    const data = [], test = []; for (let i = 0; i < 500; i++) data.push(draw1(r)); for (let i = 0; i < 500; i++) test.push(draw1(r));
+    const MODELS = ["one normal distribution", "mixture of 2 normals", "mixture of 4 normals"];
+    let model = MODELS[1], fake = [], seed = 1;
+    const em = (K) => {
+      const s = data.slice().sort((a, b) => a - b), w = new Array(K).fill(1 / K), mu = [], sd = new Array(K).fill(1);
+      for (let j = 0; j < K; j++) mu.push(s[Math.floor((j + 0.5) / K * s.length)]);
+      for (let it = 0; it < 200; it++) {
+        const R = data.map((x) => { const q = mu.map((m, j) => w[j] * Math.exp(-0.5 * ((x - m) / sd[j]) ** 2) / sd[j]); const t = q.reduce((a, b) => a + b, 0) || 1e-300; return q.map((v) => v / t); });
+        for (let j = 0; j < K; j++) { const n = R.reduce((a, q) => a + q[j], 0); w[j] = n / data.length; mu[j] = R.reduce((a, q, i) => a + q[j] * data[i], 0) / n; sd[j] = Math.max(0.08, Math.sqrt(R.reduce((a, q, i) => a + q[j] * (data[i] - mu[j]) ** 2, 0) / n)); }
+      }
+      return { w, mu, sd };
+    };
+    const fits = {}; MODELS.forEach((m, i) => { fits[m] = em([1, 2, 4][i]); });
+    const dens = (x) => { const f = fits[model]; return f.w.reduce((s, w, j) => s + w * Math.exp(-0.5 * ((x - f.mu[j]) / f.sd[j]) ** 2) / (f.sd[j] * Math.sqrt(2 * Math.PI)), 0); };
+    const sample = (n) => { const rr = rng(1000 + seed++), f = fits[model], out = []; for (let i = 0; i < n; i++) { let u = rr(), j = 0; while (j < f.w.length - 1 && u > f.w[j]) { u -= f.w[j]; j++; } out.push(f.mu[j] + f.sd[j] * rr.normal()); } return out; };
+    const P = plot(box, [-3.5, 4.5], [0, 0.55], { ratio: 0.5, maxWidth: 680 });
+    const out = readout(box), NB = 32, BW = 8 / NB;
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("measured quantity", "density", ticks(-3, 4, 7), ticks(0, 0.5, 5));
+      P.clip(() => {
+        hist(P, data, -3.5, 4.5, NB, rgba(k.a, 0.28), null, 1 / (data.length * BW));
+        if (fake.length) { const h = new Array(NB).fill(0); fake.forEach((v) => { const i = Math.floor((v + 3.5) / BW); if (i >= 0 && i < NB) h[i]++; }); const pts = []; h.forEach((n, i) => { const y = n / (fake.length * BW); pts.push([-3.5 + i * BW, y], [-3.5 + (i + 1) * BW, y]); }); P.line(pts, k.r, 2); }
+        const g = []; for (let x = -3.5; x <= 4.5; x += 0.02) g.push([x, dens(x)]); P.line(g, k.ink, 2.2);
+      });
+      legend(P, [["real data (histogram)", rgba(k.a, 0.5), null, "box"], ["learned density p̂(x)", k.ink], ...(fake.length ? [["generated samples", k.r]] : [])], "right");
+      const tll = test.reduce((s, x) => s + Math.log(Math.max(1e-300, dens(x))), 0) / test.length;
+      out.innerHTML = `Model: ${model}. Average log-likelihood of 500 <i>new</i> real measurements = <b>${tll.toFixed(3)}</b> (higher is better). ` +
+        (fake.length ? `Red: ${fake.length} samples generated by the model. ` : "Press Generate to draw new samples from the learned density. ") +
+        `A single normal cannot make two peaks, so its samples look wrong; the mixture of 2 matches the data. Once a model has learned p(x), generating is just sampling from it.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "model", MODELS, model, (v) => { model = v; fake = []; draw(); });
+    button(c, "Generate 500 samples", () => { fake = sample(500); draw(); });
+    draw(); return draw;
+  };
+
+  // 46. Exploration versus exploitation: an ε-greedy agent on three slot machines
+  W.bandit = (box) => {
+    const TRUE = [0.3, 0.5, 0.7], N = 600;
+    let eps = 0.1, seed = 1, Q = [0, 0, 0], n = [0, 0, 0], rewards = [], playing = false, t = 0, rr = rng(1);
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const B = plot(L, [0, 3], [0, 1], { ratio: 0.85, maxWidth: 300 }), P = plot(R, [0, N], [0, 1], { ratio: 0.62, maxWidth: 440 });
+    const out = readout(box);
+    const reset = () => { Q = [0, 0, 0]; n = [0, 0, 0]; rewards = []; t = 0; rr = rng(100 + seed); };
+    const pull = () => {
+      const a = rr() < eps ? Math.floor(rr() * 3) : Q.indexOf(Math.max(...Q)), rw = rr() < TRUE[a] ? 1 : 0;
+      n[a]++; Q[a] += (rw - Q[a]) / n[a]; rewards.push(rw); t++;
+    };
+    const draw = () => {
+      const k = C(); B.clear(); B.axes("machine", "chance of reward", [], ticks(0, 1, 4));
+      const c = B.ctx;
+      for (let a = 0; a < 3; a++) {
+        c.fillStyle = rgba(k.a, 0.6); c.fillRect(B.X(a + 0.2), B.Y(Q[a]), B.X(a + 0.8) - B.X(a + 0.2), B.Y(0) - B.Y(Q[a]));
+        B.line([[a + 0.12, TRUE[a]], [a + 0.88, TRUE[a]]], k.r, 2.4, [5, 3]);
+        B.text(["A", "B", "C"][a], B.X(a + 0.5), B.h - B.pad.b + 12, k.ink, "center"); B.text(`${n[a]}×`, B.X(a + 0.5), B.Y(Math.max(Q[a], TRUE[a])) - 10, k.muted, "center");
+      }
+      legend(B, [["estimated Q", rgba(k.a, 0.6), null, "box"], ["true value", k.r, [5, 3]]], "left");
+      P.clear(); P.axes("pull", "average reward so far", ticks(0, N, 6), ticks(0, 1, 4));
+      P.clip(() => {
+        P.line([[0, 0.7], [N, 0.7]], k.g, 1.4, [5, 3]);
+        let s = 0; const pts = rewards.map((v, i) => { s += v; return [i + 1, s / (i + 1)]; }); if (pts.length > 1) P.line(pts, k.a, 2.2);
+      });
+      legend(P, [["this run", k.a], ["best possible (always C)", k.g, [5, 3]]], "bottom-right");
+      const avg = rewards.length ? rewards.reduce((a, b) => a + b, 0) / rewards.length : 0;
+      out.innerHTML = `ε = ${eps.toFixed(2)}: the agent explores (a random machine) with probability ε and otherwise exploits the machine with the highest estimate. ` +
+        `After ${t} pulls the average reward is <b>${avg.toFixed(3)}</b>; machine C was chosen ${t ? (100 * n[2] / t).toFixed(0) : 0}% of the time. ` +
+        `With ε = 0 the agent can lock onto a poor machine forever; with ε large it wastes pulls on machines it already knows are poor.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "exploration ε", 0, 0.6, 0.01, eps, (v) => v.toFixed(2), (v) => { eps = v; });
+    const runB = button(c, "Run 600 pulls", () => {
+      if (playing) { playing = false; runB.textContent = "Run 600 pulls"; return; }
+      reset(); playing = true; runB.textContent = "Stop";
+      const f = () => { if (!playing) return; for (let q = 0; q < 6 && t < N; q++) pull(); draw(); if (t < N) requestAnimationFrame(f); else { playing = false; runB.textContent = "Run 600 pulls"; seed++; } };
+      requestAnimationFrame(f);
+    });
+    reset(); for (let i = 0; i < N; i++) pull(); seed++;
+    draw(); return draw;
+  };
+
+  // 47. Physics-informed fit: data term plus λ × residual of the oscillator equation (solved exactly by least squares)
+  W.pinn = (box) => {
+    const d0 = 2, w0 = 20, om = Math.sqrt(w0 * w0 - d0 * d0), xt = (t) => Math.exp(-d0 * t) * (Math.cos(om * t) + d0 / om * Math.sin(om * t));
+    const r = rng(47), TD = [], XD = []; for (let i = 0; i < 12; i++) { const t = 0.35 * i / 11; TD.push(t); XD.push(xt(t) + 0.03 * r.normal()); }
+    const DEG = 30, TC = []; for (let j = 0; j < 120; j++) TC.push(j / 119);
+    const cheb = (t) => {
+      const s = 2 * t - 1, T = [1, s], dT = [0, 1], ddT = [0, 0];
+      for (let n = 1; n < DEG; n++) { T.push(2 * s * T[n] - T[n - 1]); dT.push(2 * T[n] + 2 * s * dT[n] - dT[n - 1]); ddT.push(4 * dT[n] + 2 * s * ddT[n] - ddT[n - 1]); }
+      return [T, dT.map((v) => 2 * v), ddT.map((v) => 4 * v)];
+    };
+    const BD = TD.map((t) => cheb(t)[0]), BC = TC.map(cheb), G = []; for (let i = 0; i <= 300; i++) G.push(i / 300);
+    const BG = G.map((t) => cheb(t)[0]);
+    let ll = 0, dl = 2;
+    const P = plot(box, [0, 1], [-1.3, 1.3], { ratio: 0.46, maxWidth: 700 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), lam = ll <= -4.99 ? 0 : Math.pow(10, ll), rows = [], y = [];
+      BD.forEach((b, i) => { rows.push(b.map((v) => v / Math.sqrt(12))); y.push(XD[i] / Math.sqrt(12)); });
+      if (lam > 0) BC.forEach(([T, dT, ddT]) => { rows.push(T.map((_, n) => (ddT[n] + 2 * dl * dT[n] + w0 * w0 * T[n]) / (w0 * w0) * Math.sqrt(lam / 120))); y.push(0); });
+      const c = lsq(rows, y, 1e-7), f = BG.map((b) => b.reduce((s, v, n) => s + v * c[n], 0));
+      P.clear(); P.axes("time t (s)", "position x", ticks(0, 1, 10), ticks(-1, 1, 2));
+      const cx = P.ctx; cx.fillStyle = rgba(k.muted, 0.12); cx.fillRect(P.X(0), P.Y(1.3), P.X(0.35) - P.X(0), P.Y(-1.3) - P.Y(1.3));
+      P.clip(() => { P.line(G.map((t) => [t, xt(t)]), k.muted, 1.6, [5, 4]); P.line(G.map((t, i) => [t, f[i]]), lam > 0 ? k.g : k.r, 2.4); TD.forEach((t, i) => P.dot(t, XD[i], k.a, 4)); });
+      legend(P, [["true motion", k.muted, [5, 4]], ["12 measurements (grey band)", k.a, null, "dot"], [lam > 0 ? "physics-informed fit" : "fit to the data only", lam > 0 ? k.g : k.r]], "right");
+      let e = 0, ne = 0; G.forEach((t, i) => { if (t > 0.35) { e += (f[i] - xt(t)) ** 2; ne++; } });
+      const de = Math.sqrt(BD.reduce((s, b, i) => s + (b.reduce((q, v, n) => q + v * c[n], 0) - XD[i]) ** 2, 0) / 12);
+      out.innerHTML = `λ = <b>${lam === 0 ? "0" : lam.toPrecision(2)}</b>, damping in the law δ = ${dl.toFixed(1)} s⁻¹ (true 2.0). RMS error on the 12 measurements = ${de.toFixed(3)}; ` +
+        `RMS error after 0.35 s, where there are no data = <b>${Math.sqrt(e / ne).toFixed(3)}</b>. ` +
+        (lam === 0 ? "With λ = 0 only the data count: the curve passes through the points and is free to do anything beyond them." :
+          Math.abs(dl - 2) > 0.3 ? "The law is wrong, and the fit follows the wrong law confidently: a PINN is only as good as the physics you give it." :
+            "The data fix the start; the equation, checked at 120 collocation times across the whole second, carries the solution forward.");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "physics weight log₁₀ λ", -5, 2, 0.1, ll, (v) => (v <= -4.99 ? "λ = 0" : "λ = " + Math.pow(10, v).toPrecision(2)), (v) => { ll = v; draw(); });
+    slider(c, "damping δ in the law", 0, 6, 0.1, dl, (v) => v.toFixed(1), (v) => { dl = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 48. Outside the training range: models fitted where data exist can fail where they do not
+  W.datashift = (box) => {
+    const truth = (x) => 0.4 * x + 1.5 * Math.sin(0.9 * x), r = rng(48), ALL = [];
+    for (let i = 0; i < 160; i++) { const x = 10 * r(); ALL.push([x, truth(x) + 0.35 * r.normal()]); }
+    const MODELS = ["polynomial", "nearest neighbours (k = 5)"];
+    let a = 6, deg = 4, model = MODELS[0];
+    const P = plot(box, [0, 10], [-2, 7], { ratio: 0.5, maxWidth: 700 });
+    const out = readout(box), G = []; for (let x = 0; x <= 10.0001; x += 0.02) G.push(x);
+    const draw = () => {
+      const k = C(), tr = ALL.filter((p) => p[0] <= a), te = ALL.filter((p) => p[0] > a);
+      let f;
+      if (model === MODELS[0]) { const g = polyfit(tr.map((p) => p[0] / 5 - 1), tr.map((p) => p[1]), deg, 1e-7); f = (x) => g(x / 5 - 1); }
+      else f = (x) => tr.map((p) => [Math.abs(p[0] - x), p[1]]).sort((p, q) => p[0] - q[0]).slice(0, 5).reduce((s, p) => s + p[1] / 5, 0);
+      P.clear(); P.axes("x (e.g. temperature, energy, time)", "y", ticks(0, 10, 10), ticks(-2, 6, 4));
+      const c = P.ctx; c.fillStyle = rgba(k.g, 0.1); c.fillRect(P.X(0), P.Y(7), P.X(a) - P.X(0), P.Y(-2) - P.Y(7));
+      P.text("training data cover this range", P.X(0) + 8, P.Y(6.6), k.g);
+      P.clip(() => { P.line(G.map((x) => [x, truth(x)]), k.muted, 1.4, [5, 4]); tr.forEach((p) => P.dot(p[0], p[1], k.a, 3)); te.forEach((p) => P.dot(p[0], p[1], k.b, 3)); P.line(G.map((x) => [x, f(x)]), k.r, 2.4); });
+      legend(P, [["training data", k.a, null, "dot"], ["new data, outside the range", k.b, null, "dot"], ["model", k.r]], "bottom-right");
+      const rm = (D) => Math.sqrt(D.reduce((s, p) => s + (p[1] - f(p[0])) ** 2, 0) / Math.max(1, D.length));
+      out.innerHTML = `RMS error inside the training range = <b>${rm(tr).toFixed(2)}</b>; on new data outside it = <b style="color:${k.r}">${te.length ? rm(te).toFixed(2) : "—"}</b> (noise 0.35). ` +
+        `The model looks excellent on data like its training data and can be badly wrong elsewhere: a polynomial shoots off, nearest neighbours stay flat. ` +
+        `Test a model on data from the conditions where it will be used, and say where it was trained.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "model", MODELS, model, (v) => { model = v; draw(); });
+    slider(c, "training data up to x =", 3, 10, 0.1, a, (v) => v.toFixed(1), (v) => { a = v; draw(); });
+    slider(c, "polynomial degree", 1, 9, 1, deg, (v) => v.toFixed(0), (v) => { deg = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 49. Bias and variance seen directly: many training sets, many fits
+  W.biasvar = (box) => {
+    const truth = (x) => Math.sin(2.6 * x) + 0.3 * x, SD = 0.3, NSET = 40, N = 20, G = []; for (let i = 0; i <= 120; i++) G.push(-1 + i / 60);
+    const sets = []; for (let s = 0; s < NSET; s++) { const r = rng(500 + s), xs = [], ys = []; for (let i = 0; i < N; i++) { const x = -1 + 2 * r(); xs.push(x); ys.push(truth(x) + SD * r.normal()); } sets.push([xs, ys]); }
+    const DEGS = 11, stats = [], curves = [];
+    for (let d = 0; d < DEGS; d++) {
+      const F = sets.map(([xs, ys]) => { const f = polyfit(xs, ys, d, 1e-6); return G.map((x) => Math.max(-6, Math.min(6, f(x)))); });
+      const mean = G.map((_, j) => F.reduce((s, f) => s + f[j], 0) / NSET);
+      const b2 = G.reduce((s, x, j) => s + (mean[j] - truth(x)) ** 2, 0) / G.length, v = G.reduce((s, _, j) => s + F.reduce((q, f) => q + (f[j] - mean[j]) ** 2, 0) / NSET, 0) / G.length;
+      stats.push([b2, v]); curves.push([F, mean]);
+    }
+    let deg = 1;
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const P = plot(L, [-1, 1], [-2, 2.2], { ratio: 0.75, maxWidth: 420 }), Q = plot(R, [0, DEGS - 1], [0, 0.6], { ratio: 0.75, maxWidth: 360 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), [F, mean] = curves[deg];
+      P.clear(); P.axes("x", "y", ticks(-1, 1, 4), ticks(-2, 2, 4));
+      P.clip(() => { F.forEach((f) => P.line(G.map((x, j) => [x, f[j]]), rgba(k.a, 0.22), 1.2)); P.line(G.map((x) => [x, truth(x)]), k.ink, 2, [5, 4]); P.line(G.map((x, j) => [x, mean[j]]), k.r, 2.6); });
+      legend(P, [[`${NSET} fits, each to a new training set`, rgba(k.a, 0.6)], ["average fit", k.r], ["true f(x)", k.ink, [5, 4]]], "bottom-right");
+      Q.clear(); Q.axes("polynomial degree", "error", ticks(0, 10, 5), ticks(0, 0.6, 3));
+      Q.clip(() => {
+        const b = stats.map((s, d) => [d, s[0]]), v = stats.map((s, d) => [d, s[1]]), t = stats.map((s, d) => [d, s[0] + s[1] + SD * SD]);
+        Q.line([[0, SD * SD], [10, SD * SD]], k.muted, 1.2, [3, 3]); Q.line(b, k.a, 2.2); Q.line(v, k.b, 2.2); Q.line(t, k.r, 2.6);
+        Q.line([[deg, 0], [deg, 0.6]], k.grid, 1); Q.dot(deg, t[deg][1], k.r, 5.5);
+      });
+      legend(Q, [["bias²", k.a], ["variance", k.b], ["noise σ²", k.muted, [3, 3]], ["expected test MSE", k.r]], "right");
+      out.innerHTML = `Degree ${deg}: bias² = <b>${stats[deg][0].toFixed(3)}</b> (how far the <span style="color:${k.r}">average fit</span> is from the truth), ` +
+        `variance = <b>${stats[deg][1].toFixed(3)}</b> (how much the <span style="color:${k.a}">fits</span> scatter around their average), noise = ${(SD * SD).toFixed(2)}. ` +
+        `Expected test MSE = bias² + variance + noise = <b>${(stats[deg][0] + stats[deg][1] + SD * SD).toFixed(3)}</b>. Low degree: the fits agree but are all wrong; high degree: right on average, but each one is wild.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "flexibility (polynomial degree)", 0, DEGS - 1, 1, deg, (v) => v.toFixed(0), (v) => { deg = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 50. The Bayes classifier in one dimension: priors, class densities and the decision boundary
+  W.bayes1d = (box) => {
+    let pi1 = 0.5, s1 = 1, m1 = 1.5;
+    const P = plot(box, [-4, 5], [0, 0.45], { ratio: 0.42, maxWidth: 680 }), Q = plot(box, [-4, 5], [0, 1], { ratio: 0.2, maxWidth: 680 });
+    const pdf = (x, m, s) => Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
+    const out = readout(box), G = []; for (let x = -4; x <= 5.0001; x += 0.01) G.push(x);
+    const draw = () => {
+      const k = C(), f0 = (x) => (1 - pi1) * pdf(x, -1, 1), f1 = (x) => pi1 * pdf(x, m1, s1);
+      P.yr = [0, Math.max(0.2, ...G.map((x) => Math.max(f0(x), f1(x)))) * 1.12];
+      P.clear(); P.axes("", "π × density", [], []);
+      const c = P.ctx; let err = 0; const cuts = [];
+      G.forEach((x, i) => { const a = f0(x), b = f1(x); err += Math.min(a, b) * 0.01; c.fillStyle = b > a ? k.fillA : k.fillB; c.fillRect(P.X(x), P.Y(Math.min(a, b)), P.X(x + 0.01) - P.X(x) + 0.5, P.Y(0) - P.Y(Math.min(a, b))); if (i && (f1(G[i - 1]) > f0(G[i - 1])) !== (b > a)) cuts.push(x); });
+      P.line(G.map((x) => [x, f0(x)]), k.b, 2.4); P.line(G.map((x) => [x, f1(x)]), k.a, 2.4);
+      cuts.forEach((x) => P.line([[x, 0], [x, P.yr[1]]], k.ink, 1.8, [5, 4]));
+      legend(P, [["class 0: (1 − π₁) f₀(x)", k.b], ["class 1: π₁ f₁(x)", k.a], ["Bayes boundary", k.ink, [5, 4]], ["shaded: the errors", k.muted, null, "box"]], "right");
+      Q.clear(); Q.axes("x", "P(Y = 1 | x)", ticks(-4, 5, 9), [0, 0.5, 1]);
+      Q.clip(() => { Q.line([[-4, 0.5], [5, 0.5]], k.grid, 1, [3, 3]); Q.line(G.map((x) => [x, f1(x) / (f0(x) + f1(x))]), k.a, 2.4); cuts.forEach((x) => Q.line([[x, 0], [x, 1]], k.ink, 1.4, [5, 4])); });
+      out.innerHTML = `The Bayes classifier picks the class with the larger π<sub>k</sub> f<sub>k</sub>(x), i.e. P(Y = 1 | x) > 0.5. ` +
+        `Boundary at x = <b>${cuts.map((x) => x.toFixed(2)).join(" and ") || "none (one class always wins)"}</b>. Bayes error rate (the shaded area) = <b>${(100 * err).toFixed(1)}%</b>: no classifier can do better on these classes. ` +
+        `Make class 1 rarer and the boundary moves into its territory; give it a different spread and the boundary splits in two.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "prior π₁ (share of class 1)", 0.02, 0.98, 0.01, pi1, (v) => v.toFixed(2), (v) => { pi1 = v; draw(); });
+    slider(c, "class 1 mean", -1, 4, 0.05, m1, (v) => v.toFixed(2), (v) => { m1 = v; draw(); });
+    slider(c, "class 1 spread", 0.4, 2.5, 0.05, s1, (v) => v.toFixed(2), (v) => { s1 = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 51. The same data, three kinds of question: regression, classification, clustering
+  W.mltypes = (box) => {
+    const r = rng(51), D = [];
+    for (let i = 0; i < 70; i++) { const f = i < 45 ? 0 : 1, v = f ? 4 + 1.1 * r.normal() : 2.2 + 0.8 * r.normal(); D.push({ v, T: (f ? 52 : 40) + 3.2 * v + 3 * r.normal(), f }); }
+    const TASKS = ["regression: predict a number", "classification: predict a label", "clustering: no labels at all"];
+    let task = TASKS[0], km = null;
+    const P = plot(box, [0, 7], [35, 80], { ratio: 0.55, maxWidth: 640 });
+    const out = readout(box);
+    const fitL = lsq(D.map((d) => [1, d.v]), D.map((d) => d.T));
+    const kmeans = () => {
+      let c = [[1.5, 42], [5, 70]]; const sx = 2, sy = 10, lab = new Array(D.length).fill(0);
+      for (let it = 0; it < 20; it++) {
+        D.forEach((d, i) => { lab[i] = ((d.v - c[0][0]) / sx) ** 2 + ((d.T - c[0][1]) / sy) ** 2 < ((d.v - c[1][0]) / sx) ** 2 + ((d.T - c[1][1]) / sy) ** 2 ? 0 : 1; });
+        c = [0, 1].map((j) => { const m = D.filter((_, i) => lab[i] === j); return [m.reduce((s, d) => s + d.v, 0) / m.length, m.reduce((s, d) => s + d.T, 0) / m.length]; });
+      }
+      return { lab, c };
+    };
+    const lda = (() => { const m0 = [0, 0], m1 = [0, 0], n = [0, 0]; D.forEach((d) => { const m = d.f ? m1 : m0; m[0] += d.v; m[1] += d.T; n[d.f]++; }); m0[0] /= n[0]; m0[1] /= n[0]; m1[0] /= n[1]; m1[1] /= n[1]; const w = [(m1[0] - m0[0]) / 1, (m1[1] - m0[1]) / 16]; const mid = [(m0[0] + m1[0]) / 2, (m0[1] + m1[1]) / 2]; return [w[0], w[1], -(w[0] * mid[0] + w[1] * mid[1])]; })();
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("vibration (mm/s)", "temperature (°C)", ticks(0, 7, 7), ticks(40, 80, 4));
+      P.clip(() => {
+        if (task === TASKS[0]) { D.forEach((d) => P.dot(d.v, d.T, k.ink, 3.4)); P.line([[0, fitL[0]], [7, fitL[0] + 7 * fitL[1]]], k.r, 2.4); }
+        else if (task === TASKS[1]) { regions(P, (x) => lda[0] * x[0] + lda[1] * x[1] + lda[2] > 0, 70, 45); D.forEach((d) => P.dot(d.v, d.T, d.f ? k.b : k.a, 3.6)); lineEq(P, lda[0], lda[1], lda[2], k.ink, 2.2); }
+        else { if (!km) km = kmeans(); D.forEach((d, i) => P.dot(d.v, d.T, km.lab[i] ? k.g : k.r, 3.6)); km.c.forEach((m) => { P.dot(m[0], m[1], k.ink, 7); }); }
+      });
+      const L = task === TASKS[0] ? [["machines", k.ink, null, "dot"], ["fitted line: temperature from vibration", k.r]] :
+        task === TASKS[1] ? [["healthy", k.a, null, "dot"], ["faulty", k.b, null, "dot"], ["decision boundary", k.ink]] : [["group 1 (found)", k.r, null, "dot"], ["group 2 (found)", k.g, null, "dot"], ["group centres", k.ink, null, "dot"]];
+      legend(P, L, "left");
+      out.innerHTML = task === TASKS[0] ? "<b>Regression</b> (supervised): the output Y is a number, here the temperature, and is known for the training machines. The model predicts it for a new vibration level." :
+        task === TASKS[1] ? "<b>Classification</b> (supervised): the output is a category, healthy or faulty, known for the training machines. The model draws a boundary and labels new machines by the side they fall on." :
+          "<b>Clustering</b> (unsupervised): there is no output at all, only the measurements. k-means finds two groups by itself; whether they mean healthy and faulty is for us to check.";
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "question", TASKS, task, (v) => { task = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 52. A data table and its scatter plot: each row is a point; Y = f(X) + ε
+  W.table = (box) => {
+    const f = (x) => 20 + 6 * x - 0.35 * x * x, r = rng(52), rows = [];
+    for (let i = 0; i < 10; i++) { const x = +(1 + i * 0.9 + 0.3 * r()).toFixed(1), e = +(2.2 * r.normal()).toFixed(1); rows.push({ x, e, y: +(f(x) + e).toFixed(1) }); }
+    let sel = 3, reveal = false;
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", { class: "mlw-col-narrow" }, wrap), R = el("div", {}, wrap);
+    const tb = el("table", { class: "mlw-cm" }, L);
+    const P = plot(R, [0, 11], [15, 50], { ratio: 0.75, maxWidth: 440 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C();
+      tb.innerHTML = `<tr><th>i</th><th>x<sub>i</sub> (load, kN)</th><th>y<sub>i</sub> (strain)</th>${reveal ? "<th>f(x<sub>i</sub>)</th><th>ε<sub>i</sub></th>" : ""}</tr>` +
+        rows.map((q, i) => `<tr data-i="${i}" style="cursor:pointer;${i === sel ? `background:${rgba(k.a, 0.15)};font-weight:bold` : ""}"><td>${i + 1}</td><td>${q.x}</td><td>${q.y}</td>${reveal ? `<td>${f(q.x).toFixed(1)}</td><td>${q.e > 0 ? "+" : ""}${q.e}</td>` : ""}</tr>`).join("");
+      tb.querySelectorAll("tr[data-i]").forEach((tr) => tr.addEventListener("click", () => { sel = +tr.dataset.i; draw(); }));
+      P.clear(); P.axes("x (load)", "y (strain)", ticks(0, 10, 5), ticks(20, 50, 3));
+      P.clip(() => {
+        if (reveal) { const g = []; for (let x = 0; x <= 11; x += 0.05) g.push([x, f(x)]); P.line(g, k.g, 2.2); const q = rows[sel]; P.line([[q.x, f(q.x)], [q.x, q.y]], k.r, 2.4); }
+        rows.forEach((q, i) => P.dot(q.x, q.y, i === sel ? k.b : k.a, i === sel ? 6.5 : 4));
+      });
+      if (reveal) legend(P, [["true f(x), normally unknown", k.g], ["ε: the noise in this row", k.r]], "bottom-right");
+      const q = rows[sel];
+      out.innerHTML = `Row ${sel + 1} is the point (x<sub>${sel + 1}</sub>, y<sub>${sel + 1}</sub>) = (${q.x}, ${q.y}). ` + (reveal ?
+        `It splits as y = f(x) + ε = ${f(q.x).toFixed(1)} ${q.e < 0 ? "−" : "+"} ${Math.abs(q.e)}. In real data we see only the first three columns: estimating f from them is the whole job of statistical learning.` :
+        "Click a row or a point. Then tick the box to see what the data hide: the true function f and the noise ε of every row.");
+    };
+    P.cv.addEventListener("click", (e) => { const rc = P.cv.getBoundingClientRect(), px = e.clientX - rc.left, py = e.clientY - rc.top; let b = 0, bd = Infinity; rows.forEach((q, i) => { const d = Math.hypot(P.X(q.x) - px, P.Y(q.y) - py); if (d < bd) { bd = d; b = i; } }); sel = b; draw(); });
+    const c = el("div", { class: "mlw-controls" }, box);
+    checkbox(c, "reveal the true f and the noise ε", reveal, (v) => { reveal = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 53. Notation for a data matrix: n rows (observations), p columns (variables)
+  W.notation = (box) => {
+    const VARS = ["vibration", "temperature", "current", "noise", "hours"], r = rng(53), vals = [];
+    for (let i = 0; i < 8; i++) vals.push([2 + 3 * r(), 40 + 30 * r(), 8 + 6 * r(), 60 + 20 * r(), 100 + 900 * r()].map((v) => +v.toFixed(v > 99 ? 0 : 1)));
+    const MODES = ["one entry xᵢⱼ", "one row xᵢ (an observation)", "one column xⱼ (a variable)", "the transpose Xᵀ"];
+    let n = 5, p = 3, i0 = 1, j0 = 0, mode = MODES[0];
+    const holder = el("div", { class: "mlw-matwrap" }, box);
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), T = mode === MODES[3], R = T ? p : n, Cc = T ? n : p, hi = rgba(k.a, 0.22), hj = rgba(k.b, 0.25);
+      let h = `<table class="mlw-cm" style="text-align:center"><tr><th></th>${Array.from({ length: Cc }, (_, c) => `<th>${T ? `obs ${c + 1}` : VARS[c]}<br><small>j = ${c + 1}</small></th>`).join("")}</tr>`;
+      for (let a = 0; a < R; a++) {
+        h += `<tr><th>${T ? VARS[a] : `i = ${a + 1}`}</th>`;
+        for (let b = 0; b < Cc; b++) {
+          const i = T ? b : a, j = T ? a : b;
+          const on = (mode === MODES[0] && i === i0 && j === j0) || (mode === MODES[1] && i === i0) || (mode === MODES[2] && j === j0);
+          h += `<td data-i="${i}" data-j="${j}" style="cursor:pointer;${on ? `background:${mode === MODES[2] ? hj : hi};font-weight:bold` : ""}">${vals[i][j]}</td>`;
+        }
+        h += "</tr>";
+      }
+      holder.innerHTML = h + "</table>";
+      holder.querySelectorAll("td[data-i]").forEach((td) => td.addEventListener("click", () => { i0 = +td.dataset.i; j0 = +td.dataset.j; draw(); }));
+      const row = vals[i0].slice(0, p), col = vals.slice(0, n).map((v) => v[j0]);
+      out.innerHTML = mode === MODES[0] ? `x<sub>${i0 + 1}${j0 + 1}</sub> = <b>${vals[i0][j0]}</b>: row i = ${i0 + 1} (machine ${i0 + 1}), column j = ${j0 + 1} (${VARS[j0]}). First index: the row; second: the column. X has n = ${n} rows and p = ${p} columns: it is ${n} × ${p}.` :
+        mode === MODES[1] ? `x<sub>${i0 + 1}</sub> = (${row.join(", ")})<sup>T</sup>: all p = ${p} measurements on machine ${i0 + 1}, a vector of length p. Vectors are columns by convention, hence the transpose when written in a line.` :
+          mode === MODES[2] ? `x<sub>${j0 + 1}</sub> = (${col.join(", ")})<sup>T</sup>: the ${VARS[j0]} of all n = ${n} machines, a vector of length n. The same symbol style as a row, so the text always says which is meant.` :
+            `Xᵀ swaps rows and columns: it is ${p} × ${n}. Entry (j, i) of Xᵀ is entry (i, j) of X. Now each column is one machine.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "show", MODES, mode, (v) => { mode = v; draw(); });
+    slider(c, "n (observations)", 2, 8, 1, n, (v) => v.toFixed(0), (v) => { n = v; i0 = Math.min(i0, n - 1); draw(); });
+    slider(c, "p (variables)", 1, 5, 1, p, (v) => v.toFixed(0), (v) => { p = v; j0 = Math.min(j0, p - 1); draw(); });
+    el("div", { class: "mlw-hint" }, box, "Click any number in the table to select its row and column.");
+    draw(); return draw;
+  };
+
+  // 54. Gradient descent on the cost surface J(β₀, β₁), with raw or standardised input
+  W.losssurface = (box) => {
+    const r = rng(54), X = [], Y = []; for (let i = 0; i < 30; i++) { const x = 10 * r(); X.push(x); Y.push(2 + 0.5 * x + 0.6 * r.normal()); }
+    const mx = X.reduce((a, b) => a + b, 0) / 30, sx = Math.sqrt(X.reduce((a, x) => a + (x - mx) ** 2, 0) / 30);
+    const MODES = ["raw input x (0 to 10)", "standardised input (mean 0, sd 1)"];
+    let mode = MODES[0], alpha = 0.03, path, running = false;
+    const xs = () => (mode === MODES[0] ? X : X.map((x) => (x - mx) / sx));
+    const geo = () => {
+      const x = xs(), n = x.length, H = [[1, x.reduce((a, b) => a + b, 0) / n], [0, x.reduce((a, b) => a + b * b, 0) / n]]; H[1][0] = H[0][1];
+      const bh = lsq(x.map((v) => [1, v]), Y); return { x, H, bh, E: eigSym(H) };
+    };
+    let g = geo();
+    const J = (b) => g.x.reduce((s, v, i) => s + (b[0] + b[1] * v - Y[i]) ** 2, 0) / (2 * g.x.length);
+    const grad = (b) => { let a = 0, c = 0; g.x.forEach((v, i) => { const e = b[0] + b[1] * v - Y[i]; a += e; c += e * v; }); return [a / g.x.length, c / g.x.length]; };
+    const startAt = () => [g.bh[0] - 2.5, g.bh[1] + 2.2];
+    path = [startAt()];
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const P = plot(L, [0, 1], [0, 1], { ratio: 0.9, maxWidth: 400 }), Q = plot(R, [0, 10], [0, 9], { ratio: 0.9, maxWidth: 360 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); P.xr = [g.bh[0] - 3.5, g.bh[0] + 3.5]; P.yr = [g.bh[1] - 3.5, g.bh[1] + 3.5];
+      P.clear(); P.axes("intercept β₀", "slope β₁", ticks(Math.ceil(P.xr[0]), Math.ceil(P.xr[0]) + 6, 3), ticks(Math.ceil(P.yr[0]), Math.ceil(P.yr[0]) + 6, 3));
+      P.clip(() => {
+        [0.05, 0.2, 0.5, 1, 2, 4, 8, 16].forEach((lev, i) => {
+          const pts = []; for (let t = 0; t <= 2 * Math.PI + 0.01; t += 0.03) { const a = Math.sqrt(2 * lev / g.E.vals[0]) * Math.cos(t), b = Math.sqrt(2 * lev / g.E.vals[1]) * Math.sin(t); pts.push([g.bh[0] + a * g.E.vecs[0][0] + b * g.E.vecs[1][0], g.bh[1] + a * g.E.vecs[0][1] + b * g.E.vecs[1][1]]); }
+          P.line(pts, rgba(k.a, 0.25 + 0.06 * i), 1.2);
+        });
+        P.line(path, k.r, 1.6); path.forEach((b, i) => P.dot(b[0], b[1], i === path.length - 1 ? k.b : k.r, i === path.length - 1 ? 5.5 : 2.6));
+        P.dot(g.bh[0], g.bh[1], k.ink, 4);
+      });
+      const b = path[path.length - 1], sc = mode === MODES[0];
+      Q.clear(); Q.axes("x", "y", ticks(0, 10, 5), ticks(0, 8, 4));
+      Q.clip(() => { X.forEach((x, i) => Q.dot(x, Y[i], k.ink, 3)); Q.line([0, 10].map((x) => [x, sc ? b[0] + b[1] * x : b[0] + b[1] * (x - mx) / sx]), k.b, 2.4); });
+      const ratio = g.E.vals[0] / g.E.vals[1], amax = 2 / g.E.vals[0];
+      out.innerHTML = `Step ${path.length - 1}: J = <b>${J(b).toFixed(3)}</b> (minimum ${J(g.bh).toFixed(3)}). The contours are ellipses; their long-to-short axis ratio is ${Math.sqrt(ratio).toFixed(1)}. ` +
+        `Largest stable step α = 2/λ<sub>max</sub> = ${amax.toFixed(3)}. ` +
+        (sc ? "With the raw input the valley is long and narrow: a step small enough not to blow up across the valley crawls along it." : "Standardised, the contours are nearly circles and gradient descent heads straight for the minimum.") +
+        (Math.hypot(b[0], b[1]) > 1e3 ? " <b>Diverged</b>: α is too large." : "");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "input", MODES, mode, (v) => { mode = v; g = geo(); path = [startAt()]; draw(); });
+    slider(c, "step size α", 0.005, 1.2, 0.005, alpha, (v) => v.toFixed(3), (v) => { alpha = v; path = [path[0]]; draw(); });
+    const stepN = (m) => { for (let q = 0; q < m; q++) { const b = path[path.length - 1]; if (Math.hypot(b[0], b[1]) > 1e3) break; const d = grad(b); path.push([b[0] - alpha * d[0], b[1] - alpha * d[1]]); } };
+    button(c, "One step", () => { stepN(1); draw(); });
+    const runB = button(c, "Run 100 steps", () => {
+      if (running) return; running = true; let m = 0;
+      const f = () => { stepN(2); m += 2; draw(); if (m < 100) requestAnimationFrame(f); else running = false; };
+      requestAnimationFrame(f);
+    });
+    button(c, "Restart", () => { path = [path[0]]; draw(); });
+    P.cv.addEventListener("click", (e) => { const rc = P.cv.getBoundingClientRect(); path = [[P.invX(e.clientX - rc.left), P.invY(e.clientY - rc.top)]]; draw(); });
+    el("div", { class: "mlw-hint" }, box, "Click on the contour plot to start from another point. Try α = 0.03 with the raw input, then switch to the standardised input and try α = 0.5.");
+    runB.title = "100 steps of gradient descent";
+    draw(); return draw;
+  };
+
+  // 55. The sampling distribution of the slope: new samples, new slopes; the standard error is their spread
+  W.slopese = (box) => {
+    const B0 = 1, B1 = 2, SD = 1.5;
+    let n = 15, seed = 1, slopes = [], lines = [], cur = null;
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const P = plot(L, [0, 4], [-3, 13], { ratio: 0.8, maxWidth: 380 }), Q = plot(R, [0, 4], [0, 1], { ratio: 0.8, maxWidth: 380 });
+    const out = readout(box);
+    const one = () => {
+      const r = rng(700 + seed++), x = [], y = []; for (let i = 0; i < n; i++) { const xi = 4 * r(); x.push(xi); y.push(B0 + B1 * xi + SD * r.normal()); }
+      const mx = x.reduce((a, b) => a + b, 0) / n, my = y.reduce((a, b) => a + b, 0) / n, sxx = x.reduce((a, v) => a + (v - mx) ** 2, 0);
+      const b1 = x.reduce((a, v, i) => a + (v - mx) * (y[i] - my), 0) / sxx, b0 = my - b1 * mx;
+      const rse = Math.sqrt(y.reduce((a, v, i) => a + (v - b0 - b1 * x[i]) ** 2, 0) / (n - 2));
+      cur = { x, y, b0, b1, se: rse / Math.sqrt(sxx) }; slopes.push(b1); lines.push([b0, b1]); if (lines.length > 40) lines.shift();
+    };
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("x", "y", ticks(0, 4, 4), ticks(0, 12, 3));
+      P.clip(() => {
+        lines.forEach(([a, b]) => P.line([[0, a], [4, a + 4 * b]], rgba(k.a, 0.18), 1.2));
+        P.line([[0, B0], [4, B0 + 4 * B1]], k.ink, 1.8, [5, 4]);
+        if (cur) { cur.x.forEach((x, i) => P.dot(x, cur.y[i], k.ink, 3.2)); P.line([[0, cur.b0], [4, cur.b0 + 4 * cur.b1]], k.r, 2.4); }
+      });
+      legend(P, [["true line (β₁ = 2)", k.ink, [5, 4]], ["fit to this sample", k.r], ["earlier fits", rgba(k.a, 0.5)]], "left");
+      const se = SD / (Math.sqrt(n) * (4 / Math.sqrt(12))), NB = 32, lo = 0, hi = 4, bw = (hi - lo) / NB;
+      const cnt = new Array(NB).fill(0); slopes.forEach((s) => { const i = Math.floor((s - lo) / bw); if (i >= 0 && i < NB) cnt[i]++; });
+      const pk = Math.max(1 / (se * Math.sqrt(2 * Math.PI)), ...cnt.map((c) => c / (slopes.length * bw)));
+      Q.yr = [0, pk * 1.15];
+      Q.clear(); Q.axes("estimated slope β̂₁", "", ticks(0, 4, 4), []);
+      Q.clip(() => {
+        hist(Q, slopes, lo, hi, NB, rgba(k.a, 0.45), null, 1 / (slopes.length * bw));
+        const g = []; for (let s = lo; s <= hi; s += 0.02) g.push([s, Math.exp(-0.5 * ((s - B1) / se) ** 2) / (se * Math.sqrt(2 * Math.PI))]); Q.line(g, k.r, 2);
+        if (cur) Q.line([[cur.b1, 0], [cur.b1, Q.yr[1]]], k.b, 2, [4, 3]);
+      });
+      legend(Q, [[`${slopes.length} slopes so far`, rgba(k.a, 0.6), null, "box"], ["theory: normal, sd = SE", k.r], ["this sample", k.b, [4, 3]]], "right");
+      const m = slopes.reduce((a, b) => a + b, 0) / slopes.length, s = Math.sqrt(slopes.reduce((a, v) => a + (v - m) ** 2, 0) / Math.max(1, slopes.length - 1));
+      out.innerHTML = `This sample: β̂₁ = <b>${cur.b1.toFixed(2)}</b>, and from this sample alone SE(β̂₁) = <b>${cur.se.toFixed(3)}</b>. ` +
+        `Over ${slopes.length} samples the slopes average ${m.toFixed(3)} (unbiased: true 2) with spread ${slopes.length > 2 ? s.toFixed(3) : "—"}. ` +
+        `The standard error estimates that spread from one sample, without ever drawing another. Increase n: the histogram narrows like 1/√n.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "sample size n", 5, 100, 1, n, (v) => v.toFixed(0), (v) => { n = v; slopes = []; lines = []; one(); draw(); });
+    button(c, "New sample", () => { one(); draw(); });
+    button(c, "Hundred samples", () => { for (let i = 0; i < 100; i++) one(); draw(); });
+    for (let i = 0; i < 30; i++) one(); draw(); return draw;
+  };
+
+  // 56. LDA versus QDA: a shared covariance gives a straight boundary, separate ones a curved boundary
+  W.ldaqda = (box) => {
+    let t = 0.7, shadeBy = "QDA", tr, te;
+    const make = () => {
+      const r = rng(56), a = 0.6 + 1.3 * t, L1 = [[a, 0], [0.9 * t * a * 0.6, Math.max(0.25, 0.7 - 0.45 * t)]], L0 = [[0.7, 0], [0, 0.7]];
+      tr = []; te = [];
+      gauss2(r, 100, [-1, 0], L0).forEach((x) => tr.push({ x, y: 0 })); gauss2(r, 100, [1, 0.3], L1).forEach((x) => tr.push({ x, y: 1 }));
+      gauss2(r, 800, [-1, 0], L0).forEach((x) => te.push({ x, y: 0 })); gauss2(r, 800, [1, 0.3], L1).forEach((x) => te.push({ x, y: 1 }));
+    };
+    const stats = () => {
+      const M = [[0, 0], [0, 0]], S = [0, 1].map(() => [[0, 0], [0, 0]]), n = [0, 0];
+      tr.forEach((d) => { n[d.y]++; M[d.y][0] += d.x[0]; M[d.y][1] += d.x[1]; }); M.forEach((m, y) => { m[0] /= n[y]; m[1] /= n[y]; });
+      tr.forEach((d) => { const a = d.x[0] - M[d.y][0], b = d.x[1] - M[d.y][1], s = S[d.y]; s[0][0] += a * a; s[0][1] += a * b; s[1][1] += b * b; });
+      const cov = (s, m) => [[s[0][0] / m, s[0][1] / m], [s[0][1] / m, s[1][1] / m]], pool = cov([[S[0][0][0] + S[1][0][0], S[0][0][1] + S[1][0][1]], [0, S[0][1][1] + S[1][1][1]]], tr.length - 2);
+      return { M, C0: cov(S[0], n[0] - 1), C1: cov(S[1], n[1] - 1), pool, pi: n.map((v) => v / tr.length) };
+    };
+    const inv = (A) => { const d = A[0][0] * A[1][1] - A[0][1] * A[1][0]; return { I: [[A[1][1] / d, -A[0][1] / d], [-A[1][0] / d, A[0][0] / d]], ld: Math.log(d) }; };
+    const qf = (I, x, m) => { const a = x[0] - m[0], b = x[1] - m[1]; return a * (I[0][0] * a + I[0][1] * b) + b * (I[1][0] * a + I[1][1] * b); };
+    const P = plot(box, [-4, 5], [-3.5, 3.5], { ratio: 0.66, maxWidth: 640 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), s = stats(), Ip = inv(s.pool), I0 = inv(s.C0), I1 = inv(s.C1);
+      const lda = (x) => -0.5 * qf(Ip.I, x, s.M[1]) + Math.log(s.pi[1]) > -0.5 * qf(Ip.I, x, s.M[0]) + Math.log(s.pi[0]) ? 1 : 0;
+      const qda = (x) => -0.5 * qf(I1.I, x, s.M[1]) - 0.5 * I1.ld + Math.log(s.pi[1]) > -0.5 * qf(I0.I, x, s.M[0]) - 0.5 * I0.ld + Math.log(s.pi[0]) ? 1 : 0;
+      P.clear(); regions(P, shadeBy === "QDA" ? qda : lda, 90, 60);
+      P.axes("x₁", "x₂", ticks(-4, 5, 9), ticks(-3, 3, 6));
+      const dm = [s.M[1][0] - s.M[0][0], s.M[1][1] - s.M[0][1]], w = [Ip.I[0][0] * dm[0] + Ip.I[0][1] * dm[1], Ip.I[1][0] * dm[0] + Ip.I[1][1] * dm[1]];
+      const c0 = -0.5 * (qf(Ip.I, [0, 0], s.M[1]) - qf(Ip.I, [0, 0], s.M[0])) + Math.log(s.pi[1] / s.pi[0]);
+      P.clip(() => { tr.forEach((d) => P.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 3)); lineEq(P, w[0], w[1], c0, k.ink, 2.2, [6, 4]); });
+      legend(P, [["class 0", k.a, null, "dot"], ["class 1", k.b, null, "dot"], ["LDA boundary (straight)", k.ink, [6, 4]], [`shading: ${shadeBy} prediction`, k.muted, null, "box"]], "right");
+      const er = (f) => te.filter((d) => f(d.x) !== d.y).length / te.length;
+      out.innerHTML = `Test error: LDA <b>${(100 * er(lda)).toFixed(1)}%</b>, QDA <b>${(100 * er(qda)).toFixed(1)}%</b>. ` +
+        `LDA assumes both classes have the same covariance, so its boundary is a straight line; QDA estimates one covariance per class and its boundary curves. ` +
+        (t < 0.2 ? "With equal spreads they agree, and LDA, with fewer parameters, is the safer choice." : "With different spreads the curved QDA boundary wraps around the tighter class and wins.");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "difference between the class spreads", 0, 1, 0.05, t, (v) => v.toFixed(2), (v) => { t = v; make(); draw(); });
+    choose(c, "shade by", ["QDA", "LDA"], shadeBy, (v) => { shadeBy = v; draw(); });
+    make(); draw(); return draw;
+  };
+
+  // 57. Local regression: a weighted straight line around each target point
+  W.loess = (box) => {
+    const r = rng(57), f = (h) => 30 + 10 * Math.sin((h - 9) / 24 * 2 * Math.PI) + 8 * Math.exp(-((h - 19) ** 2) / 6), D = [];
+    for (let i = 0; i < 90; i++) { const h = 24 * r(); D.push([h, f(h) + 3.5 * r.normal()]); }
+    let span = 0.3, x0 = 12;
+    const local = (x, wantW) => {
+      const q = Math.max(3, Math.round(span * D.length)), dist = D.map((p) => Math.abs(p[0] - x)), h = dist.slice().sort((a, b) => a - b)[q - 1] + 1e-9;
+      const w = dist.map((d) => (d < h ? (1 - (d / h) ** 3) ** 3 : 0));
+      let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0; D.forEach((p, i) => { sw += w[i]; sx += w[i] * p[0]; sy += w[i] * p[1]; sxx += w[i] * p[0] * p[0]; sxy += w[i] * p[0] * p[1]; });
+      const b = (sw * sxy - sx * sy) / (sw * sxx - sx * sx || 1e-9), a = (sy - b * sx) / sw;
+      return wantW ? { a, b, w, h } : a + b * x;
+    };
+    const P = plot(box, [0, 24], [5, 60], { ratio: 0.5, maxWidth: 700 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), L = local(x0, true), g = []; for (let x = 0; x <= 24; x += 0.1) g.push([x, local(x)]);
+      P.clear(); P.axes("hour of day", "demand (kW)", ticks(0, 24, 4), ticks(10, 60, 5));
+      const c = P.ctx; c.fillStyle = rgba(k.g, 0.08); c.fillRect(P.X(Math.max(0, x0 - L.h)), P.Y(60), P.X(Math.min(24, x0 + L.h)) - P.X(Math.max(0, x0 - L.h)), P.Y(5) - P.Y(60));
+      P.clip(() => {
+        D.forEach((p, i) => P.dot(p[0], p[1], L.w[i] > 0 ? rgba(k.a, 0.25 + 0.75 * L.w[i]) : rgba(k.muted, 0.35), 2 + 3 * L.w[i]));
+        P.line(g, k.r, 2.4);
+        P.line([x0 - L.h * 0.7, x0 + L.h * 0.7].map((x) => [x, L.a + L.b * x]), k.g, 2.6); P.dot(x0, L.a + L.b * x0, k.g, 6);
+      });
+      legend(P, [["data (size = weight at the target)", k.a, null, "dot"], ["local straight line at the target", k.g], ["local regression curve", k.r]], "left");
+      out.innerHTML = `Target hour ${x0.toFixed(1)}: a straight line is fitted to the nearest ${Math.round(span * 100)}% of the points (the green band), ` +
+        `weighting each by how close it is; its value at the target, <b>${(L.a + L.b * x0).toFixed(1)} kW</b>, is one point of the red curve. Repeating this at every hour traces the curve. ` +
+        `A small span follows the noise; a large span flattens the evening peak. The span is chosen by cross-validation.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "span s (share of data used)", 0.08, 1, 0.01, span, (v) => v.toFixed(2), (v) => { span = v; draw(); });
+    slider(c, "target hour", 0, 24, 0.1, x0, (v) => v.toFixed(1), (v) => { x0 = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 58. A kernel classifier with the radial kernel: γ sets the reach of each point, λ the smoothing
+  W.rbf = (box) => {
+    const tr = moons(58, 90, 0.22), te = moons(59, 400, 0.22);
+    let lg = 0.3, ll = -2, f = null;
+    const fit = () => {
+      const gam = Math.pow(10, lg), lam = Math.pow(10, ll), n = tr.length, K = tr.map((a) => tr.map((b) => Math.exp(-gam * ((a.x[0] - b.x[0]) ** 2 + (a.x[1] - b.x[1]) ** 2))));
+      const A = K.map((row, i) => row.map((v, j) => v + (i === j ? n * lam : 0))), al = solveLin(A, tr.map((d) => (d.y ? 1 : -1)));
+      f = (x) => tr.reduce((s, d, i) => s + al[i] * Math.exp(-gam * ((x[0] - d.x[0]) ** 2 + (x[1] - d.x[1]) ** 2)), 0);
+    };
+    const P = plot(box, [-1.6, 2.6], [-1.2, 1.6], { ratio: 0.62, maxWidth: 640 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); P.clear(); regions(P, (x) => f(x) > 0, 84, 52);
+      P.axes("x₁", "x₂", ticks(-1.5, 2.5, 4), ticks(-1, 1.5, 5));
+      P.clip(() => tr.forEach((d) => P.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 3.4)));
+      legend(P, [["class −1", k.a, null, "dot"], ["class +1", k.b, null, "dot"]], "bottom-left");
+      const acc = (D) => D.filter((d) => (f(d.x) > 0) === !!d.y).length / D.length;
+      out.innerHTML = `γ = ${Math.pow(10, lg).toPrecision(2)}, λ = ${Math.pow(10, ll).toPrecision(2)}: training accuracy <b>${(100 * acc(tr)).toFixed(0)}%</b>, test accuracy <b>${(100 * acc(te)).toFixed(1)}%</b>. ` +
+        `f(x) = Σ αᵢ K(x, xᵢ) with K(x, xᵢ) = exp(−γ‖x − xᵢ‖²): each training point spreads its influence over a distance of about 1/√γ. ` +
+        `Large γ and small λ give islands around single points (overfitting); small γ or large λ give a boundary that is almost straight.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "γ (log₁₀)", -1, 2, 0.05, lg, (v) => "γ = " + Math.pow(10, v).toPrecision(2), (v) => { lg = v; fit(); draw(); });
+    slider(c, "smoothing λ (log₁₀)", -5, 0, 0.1, ll, (v) => "λ = " + Math.pow(10, v).toPrecision(2), (v) => { ll = v; fit(); draw(); });
+    fit(); draw(); return draw;
+  };
+
+  // 59. More than two classes: one-versus-rest and one-versus-one
+  W.multiclass = (box) => {
+    const r = rng(59), D = [], M = [[-1.4, -0.6], [1.4, -0.8], [0, 1.4]];
+    M.forEach((m, y) => gauss2(r, 45, m, [[0.65, 0], [0.1, 0.65]]).forEach((x) => D.push({ x, y })));
+    const train = (sel, pos) => {     // logistic regression of class pos against the rest of sel
+      const S = D.filter((d) => sel.includes(d.y)); let b = [0, 0, 0];
+      for (let it = 0; it < 600; it++) { const g = [0, 0, 0]; S.forEach((d) => { const e = 1 / (1 + Math.exp(-(b[0] + b[1] * d.x[0] + b[2] * d.x[1]))) - (d.y === pos ? 1 : 0); g[0] += e; g[1] += e * d.x[0]; g[2] += e * d.x[1]; }); b = b.map((v, j) => v - 0.5 * g[j] / S.length); }
+      return b;
+    };
+    const ovr = [0, 1, 2].map((c) => train([0, 1, 2], c)), ovo = [[0, 1], [0, 2], [1, 2]].map(([a, c]) => ({ a, c, b: train([a, c], a) }));
+    const lin = (b, x) => b[0] + b[1] * x[0] + b[2] * x[1];
+    const predOvr = (x) => { const s = ovr.map((b) => lin(b, x)); return s.indexOf(Math.max(...s)); };
+    const predOvo = (x) => { const v = [0, 0, 0]; ovo.forEach((o) => { v[lin(o.b, x) > 0 ? o.a : o.c]++; }); const m = Math.max(...v); return v.indexOf(m); };
+    const MODES = ["one-versus-rest", "one-versus-one"];
+    let mode = MODES[0], show = 0, pt = [0.2, 0];
+    const P = plot(box, [-3.5, 3.5], [-2.8, 3.2], { ratio: 0.72, maxWidth: 620 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), col = [k.a, k.b, k.g], pred = mode === MODES[0] ? predOvr : predOvo;
+      P.clear(); const c = P.ctx, nx = 70, ny = 60, cw = (P.X(3.5) - P.X(-3.5)) / nx, ch = (P.Y(-2.8) - P.Y(3.2)) / ny;
+      for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) { c.fillStyle = rgba(col[pred([-3.5 + (i + 0.5) * 7 / nx, 3.2 - (j + 0.5) * 6 / ny])], 0.16); c.fillRect(P.X(-3.5) + i * cw, P.Y(3.2) + j * ch, cw + 0.6, ch + 0.6); }
+      P.axes("x₁", "x₂", ticks(-3, 3, 6), ticks(-2, 3, 5));
+      P.clip(() => {
+        D.forEach((d) => P.dot(d.x[0], d.x[1], col[d.y], 3.4));
+        if (mode === MODES[0]) { const b = ovr[show]; lineEq(P, b[1], b[2], b[0], col[show], 2.6, [6, 4]); }
+        else { const o = ovo[show]; lineEq(P, o.b[1], o.b[2], o.b[0], k.ink, 2.6, [6, 4]); }
+        P.dot(pt[0], pt[1], k.ink, 6); ring(P, pt[0], pt[1], k.bg, 6, 2);
+      });
+      const names = ["class 1", "class 2", "class 3"];
+      legend(P, [...names.map((n, i) => [n, col[i], null, "dot"]), [mode === MODES[0] ? `${names[show]} versus the rest` : `${names[ovo[show].a]} versus ${names[ovo[show].c]}`, mode === MODES[0] ? col[show] : k.ink, [6, 4]]], "right");
+      const txt = mode === MODES[0] ? `Scores of the clicked point: ${ovr.map((b, i) => `${names[i]} ${lin(b, pt).toFixed(2)}`).join(", ")} → <b>${names[predOvr(pt)]}</b> (the largest score). K classes need K classifiers, each trained on all the data.` :
+        `Votes for the clicked point: ${ovo.map((o) => `${names[o.a]} v ${names[o.c]} → ${names[lin(o.b, pt) > 0 ? o.a : o.c]}`).join("; ")} → <b>${names[predOvo(pt)]}</b>. K classes need K(K − 1)/2 classifiers, each trained on two classes only.`;
+      out.innerHTML = txt;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "method", MODES, mode, (v) => { mode = v; draw(); });
+    slider(c, "show classifier number", 1, 3, 1, 1, (v) => v.toFixed(0), (v) => { show = v - 1; draw(); });
+    P.cv.addEventListener("click", (e) => { const rc = P.cv.getBoundingClientRect(); pt = [P.invX(e.clientX - rc.left), P.invY(e.clientY - rc.top)]; draw(); });
+    el("div", { class: "mlw-hint" }, box, "Click anywhere to classify a new sample and see the scores or votes behind the decision.");
+    draw(); return draw;
+  };
+
+  // 60. A hyperplane in two dimensions: β₀ + β₁x₁ + β₂x₂ = 0, the sign of f(x) and the distance to the line
+  W.hyperplane = (box) => {
+    const r = rng(60), D = [];
+    gauss2(r, 25, [-1.1, -0.8], [[0.5, 0], [0.1, 0.5]]).forEach((x) => D.push({ x, y: -1 })); gauss2(r, 25, [1.1, 0.9], [[0.5, 0], [0.1, 0.5]]).forEach((x) => D.push({ x, y: 1 }));
+    let th = 60, b0 = 0, sc = 1, pt = [1.2, -1.4];
+    const P = plot(box, [-3, 3], [-2.5, 2.5], { ratio: 0.72, maxWidth: 600 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), w = [sc * Math.cos(th * Math.PI / 180), sc * Math.sin(th * Math.PI / 180)], B0 = sc * b0, f = (x) => B0 + w[0] * x[0] + w[1] * x[1];
+      P.clear(); regions(P, (x) => f(x) > 0, 72, 60);
+      P.axes("density (standardised)", "conductivity (standardised)", ticks(-3, 3, 6), ticks(-2, 2, 4));
+      P.clip(() => {
+        lineEq(P, w[0], w[1], B0, k.ink, 2.6);
+        const n = Math.hypot(w[0], w[1]), foot0 = [-B0 * w[0] / (n * n), -B0 * w[1] / (n * n)], c = P.ctx;
+        const tip = [foot0[0] + w[0] / n, foot0[1] + w[1] / n]; P.line([foot0, tip], k.r, 2.4);
+        const ang = Math.atan2(P.Y(tip[1]) - P.Y(foot0[1]), P.X(tip[0]) - P.X(foot0[0])); c.fillStyle = k.r; c.beginPath(); c.moveTo(P.X(tip[0]), P.Y(tip[1])); c.lineTo(P.X(tip[0]) - 10 * Math.cos(ang - 0.4), P.Y(tip[1]) - 10 * Math.sin(ang - 0.4)); c.lineTo(P.X(tip[0]) - 10 * Math.cos(ang + 0.4), P.Y(tip[1]) - 10 * Math.sin(ang + 0.4)); c.fill();
+        P.text("β", P.X(tip[0]) + 8, P.Y(tip[1]) - 8, k.r);
+        D.forEach((d) => P.dot(d.x[0], d.x[1], d.y > 0 ? k.b : k.a, 3.6));
+        const fp = f(pt), ft = [pt[0] - fp * w[0] / (n * n), pt[1] - fp * w[1] / (n * n)];
+        P.line([pt, ft], k.g, 2, [4, 3]); P.dot(pt[0], pt[1], k.ink, 6);
+      });
+      legend(P, [["pure (y = −1)", k.a, null, "dot"], ["adulterated (y = +1)", k.b, null, "dot"], ["hyperplane f(x) = 0", k.ink], ["β: points to f > 0", k.r], ["distance of the clicked point", k.g, [4, 3]]], "bottom-right");
+      const fp = f(pt), n = Math.hypot(w[0], w[1]), wrong = D.filter((d) => d.y * f(d.x) <= 0).length;
+      out.innerHTML = `f(x) = ${B0.toFixed(2)} + ${w[0].toFixed(2)}·x₁ + ${w[1].toFixed(2)}·x₂ (‖β‖ = ${n.toFixed(2)}). Clicked point: f = <b>${fp.toFixed(2)}</b>, ` +
+        `so it is on the ${fp > 0 ? "orange (f > 0)" : "blue (f < 0)"} side, at distance |f| / ‖β‖ = <b>${(Math.abs(fp) / n).toFixed(2)}</b>. Misclassified samples: <b>${wrong}</b>. ` +
+        `Scaling all the coefficients changes f but not the line or the distance: that is why the margin problem fixes ‖β‖ = 1.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "direction of β (degrees)", 0, 359, 1, th, (v) => v.toFixed(0) + "°", (v) => { th = v; draw(); });
+    slider(c, "offset β₀", -2.5, 2.5, 0.05, b0, (v) => v.toFixed(2), (v) => { b0 = v; draw(); });
+    slider(c, "scale all coefficients by", 0.3, 3, 0.05, sc, (v) => "× " + v.toFixed(2), (v) => { sc = v; draw(); });
+    P.cv.addEventListener("click", (e) => { const rc = P.cv.getBoundingClientRect(); pt = [P.invX(e.clientX - rc.left), P.invY(e.clientY - rc.top)]; draw(); });
+    el("div", { class: "mlw-hint" }, box, "Click anywhere to place a test point.");
+    draw(); return draw;
+  };
+
+  // 61. Pooling: shrink a feature map by keeping the largest (or average) value in each window
+  W.pooling = (box) => {
+    const N = 8, r = rng(61), base = [];
+    for (let i = 0; i < N + 1; i++) { base.push([]); for (let j = 0; j < N + 1; j++) base[i].push(Math.max(0, Math.round(9 * Math.exp(-(((i - 2.5) ** 2) + (j - 5) ** 2) / 4) + 7 * Math.exp(-(((i - 6) ** 2) + (j - 2) ** 2) / 3) + 2 * r()))); }
+    const MODES = ["max pooling", "average pooling"];
+    let mode = MODES[0], shift = false, sel = [0, 2];
+    const cv = el("canvas", { class: "mlw-canvas" }, box);
+    const out = readout(box);
+    const fm = (s) => Array.from({ length: N }, (_, i) => Array.from({ length: N }, (_, j) => base[i][j + (s ? 0 : 1)]));
+    const pool = (F) => Array.from({ length: N / 2 }, (_, a) => Array.from({ length: N / 2 }, (_, b) => { const v = [F[2 * a][2 * b], F[2 * a][2 * b + 1], F[2 * a + 1][2 * b], F[2 * a + 1][2 * b + 1]]; return mode === MODES[0] ? Math.max(...v) : v.reduce((p, q) => p + q, 0) / 4; }));
+    let geom = {};
+    const draw = () => {
+      const k = C(), w = Math.min(box.clientWidth || 640, 640), cs = Math.floor(Math.min(36, (w - 120) / 12)), h = N * cs + 40, d = window.devicePixelRatio || 1;
+      cv.width = w * d; cv.height = h * d; cv.style.width = w + "px"; cv.style.height = h + "px";
+      const c = cv.getContext("2d"); c.setTransform(d, 0, 0, d, 0, 0); c.clearRect(0, 0, w, h);
+      const F = fm(shift), Pm = pool(F), P0 = pool(fm(false)), x0 = 10, x1 = x0 + N * cs + 60, y0 = 26;
+      geom = { x0, x1, y0, cs };
+      const cell = (x, y, s, v, vmax, hl) => { c.fillStyle = rgba(k.a, 0.08 + 0.75 * v / vmax); c.fillRect(x, y, s - 1, s - 1); if (hl) { c.strokeStyle = k.r; c.lineWidth = 2.5; c.strokeRect(x + 1, y + 1, s - 3, s - 3); } c.fillStyle = v / vmax > 0.55 ? "#fff" : k.ink; c.font = `${Math.round(s * 0.36)}px sans-serif`; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(mode === MODES[1] && s > cs ? v.toFixed(1) : String(v), x + s / 2, y + s / 2); };
+      for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) cell(x0 + j * cs, y0 + i * cs, cs, F[i][j], 10, Math.floor(i / 2) === sel[0] && Math.floor(j / 2) === sel[1]);
+      for (let i = 0; i <= N; i += 2) { c.strokeStyle = k.muted; c.lineWidth = 1; c.beginPath(); c.moveTo(x0, y0 + i * cs); c.lineTo(x0 + N * cs, y0 + i * cs); c.moveTo(x0 + i * cs, y0); c.lineTo(x0 + i * cs, y0 + N * cs); c.stroke(); }
+      let changed = 0;
+      for (let a = 0; a < N / 2; a++) for (let b = 0; b < N / 2; b++) { cell(x1 + b * 2 * cs, y0 + a * 2 * cs, 2 * cs, Pm[a][b], 10, a === sel[0] && b === sel[1]); if (Pm[a][b] !== P0[a][b]) changed++; }
+      c.fillStyle = k.ink; c.font = "13px sans-serif"; c.textAlign = "left"; c.textBaseline = "alphabetic";
+      c.fillText(`feature map ${N} × ${N}${shift ? " (shifted 1 pixel)" : ""}`, x0, 16); c.fillText(`after ${mode}: ${N / 2} × ${N / 2}`, x1, 16);
+      c.fillStyle = k.r; c.font = "22px sans-serif"; c.fillText("→", x0 + N * cs + 18, y0 + N * cs / 2);
+      const F2 = F, a = sel[0], b = sel[1], v = [F2[2 * a][2 * b], F2[2 * a][2 * b + 1], F2[2 * a + 1][2 * b], F2[2 * a + 1][2 * b + 1]];
+      out.innerHTML = `Window (${a + 1}, ${b + 1}) holds ${v.join(", ")} → ${mode === MODES[0] ? `largest = <b>${Math.max(...v)}</b>` : `average = <b>${(v.reduce((p, q) => p + q, 0) / 4).toFixed(2)}</b>`}. ` +
+        `Each 2 × 2 window becomes one number, so the map shrinks to a quarter and the next layer sees a wider area. ` +
+        (shift ? `After shifting the image by one pixel, ${changed} of the 16 pooled values changed${mode === MODES[0] ? ": max pooling keeps a strong feature as long as it stays inside the window" : ""}.` : "Tick the shift box to move the image one pixel and see how many pooled values change.");
+    };
+    cv.addEventListener("click", (e) => {
+      const rc = cv.getBoundingClientRect(), x = e.clientX - rc.left, y = e.clientY - rc.top, g = geom;
+      let i = Math.floor((y - g.y0) / g.cs), j = x < g.x1 ? Math.floor((x - g.x0) / g.cs) : Math.floor((x - g.x1) / g.cs);
+      if (i >= 0 && i < N && j >= 0 && j < N) { sel = [Math.floor(i / 2), Math.floor(j / 2)]; draw(); }
+    });
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "pooling", MODES, mode, (v) => { mode = v; draw(); });
+    checkbox(c, "shift the image by one pixel", shift, (v) => { shift = v; draw(); });
+    el("div", { class: "mlw-hint" }, box, "Click any cell to see which window it belongs to.");
+    draw(); return draw;
+  };
+
+  // 62. Forecasting the next hour: naive rules versus an autoregressive model fitted by least squares
+  W.forecast = (box) => {
+    const r = rng(62), H = 24 * 21, y = []; let e = 0;
+    for (let t = 0; t < H; t++) { const h = t % 24, day = Math.floor(t / 24); e = 0.75 * e + 1.6 * r.normal(); y.push(30 + 10 * Math.sin((h - 9) / 24 * 2 * Math.PI) + 7 * Math.exp(-((h - 19) ** 2) / 5) - (day % 7 >= 5 ? 6 : 0) + e); }
+    const TR = 24 * 14, LAGS = [1, 2, 24], rows = [], ys = [];
+    for (let t = 24; t < TR; t++) { rows.push([1, ...LAGS.map((l) => y[t - l])]); ys.push(y[t]); }
+    const w = lsq(rows, ys);
+    const M = { "same hour yesterday": (t) => y[t - 24], "last hour's value": (t) => y[t - 1], "AR model: lags 1, 2 and 24": (t) => w[0] + LAGS.reduce((s, l, i) => s + w[i + 1] * y[t - l], 0) };
+    const names = Object.keys(M);
+    let m = names[2], days = 4;
+    const P = plot(box, [0, 96], [5, 60], { ratio: 0.42, maxWidth: 700 });
+    const out = readout(box);
+    const rmse = (f) => { let s = 0, n = 0; for (let t = TR; t < H; t++) { s += (y[t] - f(t)) ** 2; n++; } return Math.sqrt(s / n); };
+    const draw = () => {
+      const k = C(), T0 = H - 24 * days; P.xr = [0, 24 * days];
+      P.clear(); P.axes("hour of the test period", "demand (kW)", ticks(0, 24 * days, days), ticks(10, 60, 5));
+      P.clip(() => { const a = [], b = []; for (let t = T0; t < H; t++) { a.push([t - T0, y[t]]); b.push([t - T0, M[m](t)]); } P.line(a, k.ink, 1.8); P.line(b, k.r, 2, [5, 3]); });
+      legend(P, [["actual", k.ink], [`forecast: ${m}`, k.r, [5, 3]]], "right");
+      out.innerHTML = `One-hour-ahead forecasts on the last 7 days (not used for fitting). RMSE: ${names.map((n) => `${n} <b>${rmse(M[n]).toFixed(2)}</b> kW`).join(" · ")}. ` +
+        `The AR model is ŷ<sub>t</sub> = ${w[0].toFixed(1)} + ${w[1].toFixed(2)}·y<sub>t−1</sub> ${w[2] < 0 ? "−" : "+"} ${Math.abs(w[2]).toFixed(2)}·y<sub>t−2</sub> + ${w[3].toFixed(2)}·y<sub>t−24</sub>, fitted by least squares on the first 14 days. ` +
+        `Always compare a network with simple rules like these: a forecast is worth having only if it beats them.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "forecast", names, m, (v) => { m = v; draw(); });
+    slider(c, "days shown", 1, 7, 1, days, (v) => v.toFixed(0), (v) => { days = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 63. Hierarchical clustering: merge the closest groups, then cut the tree
+  W.dendrogram = (box) => {
+    const r = rng(63), pts = [];
+    [[1, 1.2, 6], [3.6, 3.2, 5], [4.2, 0.8, 5], [1.5, 3.8, 2]].forEach(([a, b, n]) => { for (let i = 0; i < n; i++) pts.push([a + 1.1 * (r() - 0.5), b + 1.1 * (r() - 0.5)]); });
+    const LINKS = ["complete", "average", "single"];
+    let link = LINKS[0], cut = 2, tree;
+    const build = () => {
+      let cl = pts.map((_, i) => ({ id: i, m: [i], h: 0 })); const merges = [], d = (a, b) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+      const D = (A, B) => { const v = []; A.m.forEach((a) => B.m.forEach((b) => v.push(d(a, b)))); return link === "single" ? Math.min(...v) : link === "complete" ? Math.max(...v) : v.reduce((s, q) => s + q, 0) / v.length; };
+      let next = pts.length;
+      while (cl.length > 1) {
+        let bi = 0, bj = 1, bd = Infinity; for (let i = 0; i < cl.length; i++) for (let j = i + 1; j < cl.length; j++) { const q = D(cl[i], cl[j]); if (q < bd) { bd = q; bi = i; bj = j; } }
+        const n = { id: next++, m: cl[bi].m.concat(cl[bj].m), h: bd, l: cl[bi], r: cl[bj] }; merges.push(n); cl = cl.filter((_, q) => q !== bi && q !== bj).concat([n]);
+      }
+      const root = cl[0], order = []; const walk = (n) => { if (n.l) { walk(n.l); walk(n.r); } else order.push(n.id); }; walk(root);
+      tree = { root, order, hmax: root.h };
+    };
+    const labels = () => { const lab = new Array(pts.length).fill(0); let c = 0; const walk = (n) => { if (!n.l || n.h <= cut) { n.m.forEach((i) => { lab[i] = c; }); c++; } else { walk(n.l); walk(n.r); } }; walk(tree.root); return { lab, k: c }; };
+    const wrap = el("div", { class: "mlw-pair" }, box), L = el("div", {}, wrap), R = el("div", {}, wrap);
+    const P = plot(L, [-0.5, 5.5], [-0.5, 5], { ratio: 0.85, maxWidth: 340 }), Q = plot(R, [0, 1], [0, 1], { ratio: 0.85, maxWidth: 420 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), { lab, k: K } = labels(), col = PAL(k);
+      P.clear(); P.axes("x₁", "x₂", ticks(0, 5, 5), ticks(0, 5, 5));
+      P.clip(() => pts.forEach((p, i) => { P.dot(p[0], p[1], col[lab[i] % col.length], 5); }));
+      Q.xr = [-0.5, pts.length - 0.5]; Q.yr = [0, tree.hmax * 1.08];
+      Q.clear(); Q.axes("samples", "merge height", [], ticks(0, Math.floor(tree.hmax), Math.max(1, Math.floor(tree.hmax))));
+      const pos = {}; tree.order.forEach((id, i) => { pos[id] = i; });
+      const xy = (n) => (n.l ? [(xy(n.l)[0] + xy(n.r)[0]) / 2, n.h] : [pos[n.id], 0]);
+      const drawN = (n) => { if (!n.l) return; const a = xy(n.l), b = xy(n.r), cc = n.h <= cut ? col[lab[n.m[0]] % col.length] : k.muted; Q.line([[a[0], a[1]], [a[0], n.h], [b[0], n.h], [b[0], b[1]]], cc, 1.8); drawN(n.l); drawN(n.r); };
+      drawN(tree.root);
+      Q.line([[-0.5, cut], [pts.length - 0.5, cut]], k.r, 2, [6, 4]); Q.text(`cut → ${K} clusters`, Q.w - Q.pad.r - 4, Q.Y(cut) - 9, k.r, "right");
+      out.innerHTML = `${link} linkage, cut at height ${cut.toFixed(2)} → <b>${K} clusters</b>. Starting with every sample on its own, the two closest groups are merged again and again; the height of each join is the distance between the groups. ` +
+        `Cutting the tree at one height gives the clusters, so one tree gives every number of clusters. Single linkage tends to chain samples into long straggly clusters; complete linkage gives compact ones.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "linkage", LINKS, link, (v) => { link = v; build(); draw(); });
+    slider(c, "cut height", 0.05, 6, 0.05, cut, (v) => v.toFixed(2), (v) => { cut = v; draw(); });
+    build(); draw(); return draw;
   };
 
   function start() {

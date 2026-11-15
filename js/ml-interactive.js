@@ -788,6 +788,632 @@
   };
 
   // ------------------------------------------------------------------ start
+  // ------------------------------------------------------------------ helpers for the newer widgets
+  function eigSym(A0) {                          // Jacobi rotations: eigenvalues and eigenvectors of a small symmetric matrix
+    const n = A0.length, A = A0.map((r) => r.slice()), V = A0.map((r, i) => r.map((_, j) => (i === j ? 1 : 0)));
+    for (let sweep = 0; sweep < 80; sweep++) {
+      let off = 0; for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) off += A[i][j] * A[i][j];
+      if (off < 1e-22) break;
+      for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) {
+        if (Math.abs(A[p][q]) < 1e-16) continue;
+        const th = 0.5 * Math.atan2(2 * A[p][q], A[q][q] - A[p][p]), c = Math.cos(th), s = Math.sin(th);
+        for (let k = 0; k < n; k++) { const a = A[k][p], b = A[k][q]; A[k][p] = c * a - s * b; A[k][q] = s * a + c * b; }
+        for (let k = 0; k < n; k++) { const a = A[p][k], b = A[q][k]; A[p][k] = c * a - s * b; A[q][k] = s * a + c * b; }
+        for (let k = 0; k < n; k++) { const a = V[k][p], b = V[k][q]; V[k][p] = c * a - s * b; V[k][q] = s * a + c * b; }
+      }
+    }
+    const idx = A.map((_, i) => i).sort((i, j) => A[j][j] - A[i][i]);
+    return { vals: idx.map((i) => Math.max(A[i][i], 0)), vecs: idx.map((i) => V.map((row) => row[i])) };
+  }
+
+  function lsq(rows, y, lam) {                    // least squares on a design matrix (array of rows), tiny ridge for stability
+    const p = rows[0].length, A = Array.from({ length: p }, () => new Array(p).fill(0)), b = new Array(p).fill(0);
+    rows.forEach((r, k) => { for (let i = 0; i < p; i++) { b[i] += r[i] * y[k]; for (let j = 0; j < p; j++) A[i][j] += r[i] * r[j]; } });
+    for (let i = 0; i < p; i++) A[i][i] += (lam || 1e-8) * rows.length;
+    for (let i = 0; i < p; i++) {
+      let m = i; for (let r = i + 1; r < p; r++) if (Math.abs(A[r][i]) > Math.abs(A[m][i])) m = r;
+      [A[i], A[m]] = [A[m], A[i]]; [b[i], b[m]] = [b[m], b[i]];
+      for (let r = i + 1; r < p; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c < p; c++) A[r][c] -= f * A[i][c]; b[r] -= f * b[i]; }
+    }
+    const w = new Array(p).fill(0);
+    for (let i = p - 1; i >= 0; i--) { let s = b[i]; for (let c = i + 1; c < p; c++) s -= A[i][c] * w[c]; w[i] = s / A[i][i]; }
+    return w;
+  }
+
+  function choose(box, label, options, value, onChange) {
+    const row = el("label", { class: "mlw-row mlw-row-tight" }, box);
+    if (label) el("span", { class: "mlw-label" }, row, label);
+    const s = el("select", { class: "mlw-select" }, row);
+    options.forEach((o) => { const e = el("option", { value: o }, s, o); if (o === value) e.selected = true; });
+    s.addEventListener("change", () => onChange(s.value));
+    return s;
+  }
+
+  function checkbox(box, label, checked, onChange) {
+    const row = el("label", { class: "mlw-check" }, box);
+    const c = el("input", { type: "checkbox" }, row); c.checked = checked;
+    el("span", {}, row, " " + label);
+    c.addEventListener("change", () => onChange(c.checked));
+    return c;
+  }
+
+  function animate(ms, onFrame, onDone) {        // calls onFrame(t) with t from 0 to 1 (eased); returns a stop function
+    let stop = false; const t0 = performance.now();
+    const f = (now) => {
+      if (stop) return;
+      const t = Math.min(1, (now - t0) / ms), e = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t);
+      onFrame(e);
+      if (t < 1) requestAnimationFrame(f); else if (onDone) onDone();
+    };
+    requestAnimationFrame(f);
+    return () => { stop = true; };
+  }
+
+  function rgba(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+
+  // a 3-D view: drag to turn, optional automatic spin
+  function view3d(box, opts) {
+    opts = opts || {};
+    const cv = el("canvas", { class: "mlw-canvas mlw-3d" }, box);
+    cv.style.touchAction = "none"; cv.style.cursor = "grab";
+    const V = { cv, yaw: opts.yaw === undefined ? -0.7 : opts.yaw, pitch: opts.pitch === undefined ? 0.4 : opts.pitch, scale: opts.scale || 0.25, redraw: () => {} };
+    V.resize = () => {
+      const w = Math.min(box.clientWidth || 520, opts.maxWidth || 520), h = Math.round(w * (opts.ratio || 0.82)), d = window.devicePixelRatio || 1;
+      cv.width = w * d; cv.height = h * d; cv.style.width = w + "px"; cv.style.height = h + "px";
+      V.w = w; V.h = h; V.ctx = cv.getContext("2d"); V.ctx.setTransform(d, 0, 0, d, 0, 0);
+    };
+    V.proj = (p) => {
+      const cy = Math.cos(V.yaw), sy = Math.sin(V.yaw), cp = Math.cos(V.pitch), sp = Math.sin(V.pitch);
+      const xr = cy * p[0] - sy * p[1], yr = sy * p[0] + cy * p[1], z = p[2] || 0;
+      const s = V.scale * Math.min(V.w, V.h);
+      return [V.w / 2 + s * xr, V.h / 2 - s * (cp * z + sp * yr), -sp * z + cp * yr];
+    };
+    V.clear = () => V.ctx.clearRect(0, 0, V.w, V.h);
+    V.line = (a, b, col, w, dash) => {
+      const c = V.ctx, A = V.proj(a), B = V.proj(b);
+      c.strokeStyle = col; c.lineWidth = w || 1.5; c.setLineDash(dash || []);
+      c.beginPath(); c.moveTo(A[0], A[1]); c.lineTo(B[0], B[1]); c.stroke(); c.setLineDash([]);
+    };
+    V.path = (pts, col, w, dash) => {
+      const c = V.ctx; c.strokeStyle = col; c.lineWidth = w || 1.5; c.setLineDash(dash || []);
+      c.beginPath(); pts.forEach((p, i) => { const q = V.proj(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.stroke(); c.setLineDash([]);
+    };
+    V.poly = (pts, fill, stroke) => {
+      const c = V.ctx; c.beginPath(); pts.forEach((p, i) => { const q = V.proj(p); i ? c.lineTo(q[0], q[1]) : c.moveTo(q[0], q[1]); }); c.closePath();
+      if (fill) { c.fillStyle = fill; c.fill(); } if (stroke) { c.strokeStyle = stroke; c.lineWidth = 1; c.stroke(); }
+    };
+    V.dot = (p, col, r) => { const c = V.ctx, q = V.proj(p); c.fillStyle = col; c.beginPath(); c.arc(q[0], q[1], r || 3, 0, 2 * Math.PI); c.fill(); };
+    V.ring = (p, col, r) => { const c = V.ctx, q = V.proj(p); c.strokeStyle = col; c.lineWidth = 1.6; c.beginPath(); c.arc(q[0], q[1], r || 5, 0, 2 * Math.PI); c.stroke(); };
+    V.text = (s, p, col) => { const c = V.ctx, q = V.proj(p); c.fillStyle = col; c.font = "13px sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(s, q[0], q[1]); };
+    V.axes = (len, names) => {
+      const k = C();
+      [[len, 0, 0], [0, len, 0], [0, 0, len]].forEach((e, i) => {
+        V.line([-e[0], -e[1], -e[2]], e, k.grid, 1);
+        V.text(names[i], [e[0] * 1.12, e[1] * 1.12, e[2] * 1.12], k.muted);
+      });
+    };
+    V.arrow = (a, b, col, label) => {
+      const c = V.ctx, A = V.proj(a), B = V.proj(b), ang = Math.atan2(B[1] - A[1], B[0] - A[0]);
+      c.strokeStyle = col; c.fillStyle = col; c.lineWidth = 2.6;
+      c.beginPath(); c.moveTo(A[0], A[1]); c.lineTo(B[0], B[1]); c.stroke();
+      c.beginPath(); c.moveTo(B[0], B[1]); c.lineTo(B[0] - 10 * Math.cos(ang - 0.4), B[1] - 10 * Math.sin(ang - 0.4));
+      c.lineTo(B[0] - 10 * Math.cos(ang + 0.4), B[1] - 10 * Math.sin(ang + 0.4)); c.closePath(); c.fill();
+      if (label) { c.font = "bold 13px sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(label, B[0] + 14 * Math.cos(ang), B[1] + 14 * Math.sin(ang)); }
+    };
+    let drag = null;
+    cv.addEventListener("pointerdown", (e) => { drag = [e.clientX, e.clientY]; cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; V.stopSpin(); });
+    cv.addEventListener("pointermove", (e) => {
+      if (!drag) return;
+      V.yaw += (e.clientX - drag[0]) * 0.01; V.pitch = Math.max(-1.5, Math.min(1.5, V.pitch + (e.clientY - drag[1]) * 0.01));
+      drag = [e.clientX, e.clientY]; V.redraw();
+    });
+    const end = () => { drag = null; cv.style.cursor = "grab"; };
+    cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+    let spinning = false;
+    V.spin = () => {
+      if (spinning) return; spinning = true;
+      let last = performance.now();
+      const f = (now) => { if (!spinning) return; V.yaw += (now - last) * 0.0006; last = now; V.redraw(); requestAnimationFrame(f); };
+      requestAnimationFrame(f);
+    };
+    V.stopSpin = () => { spinning = false; };
+    V.spinning = () => spinning;
+    V.resize();
+    return V;
+  }
+
+  // 22. PCA explorer: 2-D and 3-D data, components kept, scree with cumulative variance, loadings, rotation to the PC axes
+  W.pcaexplore = (box) => {
+    const k0 = C();
+    const SETS = {
+      "2-D: a tilted cloud": { p: 2, sd: [1.5, 0.45], names: ["x₁", "x₂"] },
+      "3-D: a flat pancake": { p: 3, sd: [1.6, 1.0, 0.18], names: ["x₁", "x₂", "x₃"] },
+      "3-D: a cigar": { p: 3, sd: [1.8, 0.32, 0.22], names: ["x₁", "x₂", "x₃"] },
+      "3-D: a round ball": { p: 3, sd: [0.95, 0.9, 0.85], names: ["x₁", "x₂", "x₃"] },
+      "3 sensors that move together": { p: 3, sensors: true, names: ["flow", "pressure", "current"] },
+    };
+    const NAMES = Object.keys(SETS);
+    let set = SETS[NAMES[0]], X = [], mean = [], Xc = [], E = null, keep = 1, recon = true, t = 0, stopAnim = null;
+    const R3 = (() => {                            // a fixed 3-D rotation, so the cloud is not aligned with the axes
+      const a = 0.7, b = 0.5, c = 0.4;
+      const Rz = [[Math.cos(a), -Math.sin(a), 0], [Math.sin(a), Math.cos(a), 0], [0, 0, 1]];
+      const Ry = [[Math.cos(b), 0, Math.sin(b)], [0, 1, 0], [-Math.sin(b), 0, Math.cos(b)]];
+      const Rx = [[1, 0, 0], [0, Math.cos(c), -Math.sin(c)], [0, Math.sin(c), Math.cos(c)]];
+      const mul = (A, B) => A.map((r) => B[0].map((_, j) => r.reduce((s, v, i) => s + v * B[i][j], 0)));
+      return mul(Rz, mul(Ry, Rx));
+    })();
+    const make = () => {
+      const r = rng(21); X = [];
+      for (let i = 0; i < 180; i++) {
+        if (set.sensors) {                          // the load drives all three sensors; each has its own noise
+          const load = 1.3 * r.normal();
+          X.push([load + 0.35 * r.normal(), 0.9 * load + 0.4 * r.normal(), 1.1 * load + 0.3 * r.normal()]);
+        } else if (set.p === 2) {
+          const a = set.sd[0] * r.normal(), b = set.sd[1] * r.normal(), th = 0.6;
+          X.push([a * Math.cos(th) - b * Math.sin(th), a * Math.sin(th) + b * Math.cos(th)]);
+        } else {
+          const z = set.sd.map((s) => s * r.normal());
+          X.push(R3.map((row) => row[0] * z[0] + row[1] * z[1] + row[2] * z[2]));
+        }
+      }
+      const p = set.p, n = X.length;
+      mean = new Array(p).fill(0); X.forEach((x) => x.forEach((v, j) => { mean[j] += v / n; }));
+      Xc = X.map((x) => x.map((v, j) => v - mean[j]));
+      const S = Array.from({ length: p }, (_, i) => Array.from({ length: p }, (_, j) => Xc.reduce((s, x) => s + x[i] * x[j], 0) / n));
+      E = eigSym(S);
+      E.vecs = E.vecs.map((v) => { let m = 0; v.forEach((x, j) => { if (Math.abs(x) > Math.abs(v[m])) m = j; }); return v[m] < 0 ? v.map((x) => -x) : v; });
+      if (p === 3) {                               // make (PC1, PC2, PC3) a right-handed set, so the rotation below is a pure rotation
+        const [a, b, c] = E.vecs, cr = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        if (cr[0] * c[0] + cr[1] * c[1] + cr[2] * c[2] < 0) E.vecs[2] = c.map((x) => -x);
+      }
+    };
+    // rotation that takes the data from the x axes to the PC axes, at fraction t
+    const rotAt = (tt) => {
+      const p = set.p, Q = E.vecs;                 // rows of Q are the PCs: Q x gives the scores
+      if (p === 2) {
+        const th = -Math.atan2(Q[0][1], Q[0][0]) * tt, c = Math.cos(th), s = Math.sin(th);
+        return (x) => [c * x[0] - s * x[1], s * x[0] + c * x[1]];
+      }
+      const tr = Q[0][0] + Q[1][1] + Q[2][2], ang = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2)));
+      let ax = [Q[2][1] - Q[1][2], Q[0][2] - Q[2][0], Q[1][0] - Q[0][1]];
+      const nrm = Math.hypot(ax[0], ax[1], ax[2]);
+      if (nrm < 1e-9) {                            // angle 0 or pi: take the axis from the symmetric part
+        if (ang < 1e-6) return (x) => x.slice();
+        const M = Q.map((r, i) => r.map((v, j) => (v + (i === j ? 1 : 0)) / 2)); let best = 0;
+        for (let i = 1; i < 3; i++) if (M[i][i] > M[best][best]) best = i;
+        ax = M[best]; const m2 = Math.hypot(ax[0], ax[1], ax[2]); ax = ax.map((v) => v / m2);
+      } else ax = ax.map((v) => v / nrm);
+      const a = ang * tt, c = Math.cos(a), s = Math.sin(a);
+      return (x) => {                              // Rodrigues' formula
+        const d = ax[0] * x[0] + ax[1] * x[1] + ax[2] * x[2];
+        const cr = [ax[1] * x[2] - ax[2] * x[1], ax[2] * x[0] - ax[0] * x[2], ax[0] * x[1] - ax[1] * x[0]];
+        return [0, 1, 2].map((i) => x[i] * c + cr[i] * s + ax[i] * d * (1 - c));
+      };
+    };
+    const project = (x) => {                       // projection of a centred point onto the first `keep` PCs
+      const out = new Array(set.p).fill(0);
+      for (let j = 0; j < keep; j++) { const v = E.vecs[j], sc = x.reduce((s, xi, i) => s + xi * v[i], 0); v.forEach((vi, i) => { out[i] += sc * vi; }); }
+      return out;
+    };
+
+    const top = el("div", { class: "mlw-pair" }, box);
+    const left = el("div", { class: "mlw-col" }, top), right = el("div", { class: "mlw-col mlw-col-narrow" }, top);
+    let P2 = null, V3 = null;
+    const S = plot(right, [0.4, 3.6], [0, 100], { ratio: 0.85, maxWidth: 340 });
+    S.pad.l = 40;
+    const tbl = el("table", { class: "mlw-cm mlw-loadings" }, right);
+    const out = readout(box);
+    const hint = el("div", { class: "mlw-hint" }, box);
+
+    const drawData = () => {
+      const k = C(), p = set.p, rot = rotAt(t), cols = [k.r, k.g, k.b];
+      const axNames = t > 0.999 ? ["PC1", "PC2", "PC3"] : set.names;
+      const pts = Xc.map((x) => ({ x: rot(x), q: rot(project(x)) }));
+      const arrows = E.vecs.map((v, j) => ({ v: rot(v.map((vi) => vi * 2 * Math.sqrt(E.vals[j]))), j }));
+      if (p === 2) {
+        const P = P2; P.clear(); P.axes(axNames[0], axNames[1], ticks(-5, 5, 10), ticks(-3, 3, 6));
+        P.clip(() => {
+          if (keep < p) { const v = rot(E.vecs[0]); P.line([[-8 * v[0], -8 * v[1]], [8 * v[0], 8 * v[1]]], rgba(k.r, 0.45), 1.5, [5, 4]); }
+          pts.forEach(({ x, q }) => {
+            if (recon && keep < p) { P.line([x, q], k.grid, 1); P.dot(q[0], q[1], k.b, 2.2); }
+            P.dot(x[0], x[1], k.a, 3);
+          });
+          arrows.forEach(({ v, j }) => {
+            const c = P.ctx, A = [P.X(0), P.Y(0)], B = [P.X(v[0]), P.Y(v[1])], ang = Math.atan2(B[1] - A[1], B[0] - A[0]);
+            c.strokeStyle = cols[j]; c.fillStyle = cols[j]; c.lineWidth = j < keep ? 3 : 1.6; c.setLineDash(j < keep ? [] : [4, 3]);
+            c.beginPath(); c.moveTo(A[0], A[1]); c.lineTo(B[0], B[1]); c.stroke(); c.setLineDash([]);
+            c.beginPath(); c.moveTo(B[0], B[1]); c.lineTo(B[0] - 10 * Math.cos(ang - 0.4), B[1] - 10 * Math.sin(ang - 0.4)); c.lineTo(B[0] - 10 * Math.cos(ang + 0.4), B[1] - 10 * Math.sin(ang + 0.4)); c.closePath(); c.fill();
+            c.font = "bold 13px sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText("PC" + (j + 1), B[0] + 16 * Math.cos(ang), B[1] + 16 * Math.sin(ang));
+          });
+        });
+      } else {
+        const V = V3; V.clear(); V.axes(4, axNames);
+        if (keep === 2) {                          // the plane of PC1 and PC2
+          const a = rot(E.vecs[0].map((v) => v * 2.4 * Math.sqrt(E.vals[0]))), b = rot(E.vecs[1].map((v) => v * 2.4 * Math.sqrt(E.vals[1])));
+          V.poly([[a[0] + b[0], a[1] + b[1], a[2] + b[2]], [a[0] - b[0], a[1] - b[1], a[2] - b[2]], [-a[0] - b[0], -a[1] - b[1], -a[2] - b[2]], [-a[0] + b[0], -a[1] + b[1], -a[2] + b[2]]], rgba(k.g, 0.13), rgba(k.g, 0.5));
+        }
+        if (keep === 1) { const v = rot(E.vecs[0]); V.line(v.map((x) => -7 * x), v.map((x) => 7 * x), rgba(k.r, 0.45), 1.5, [5, 4]); }
+        const order = pts.map((pt, i) => [V.proj(pt.x)[2], i]).sort((a, b) => b[0] - a[0]);
+        order.forEach(([, i]) => {
+          const { x, q } = pts[i];
+          if (recon && keep < p) { V.line(x, q, k.grid, 1); V.dot(q, k.b, 1.8); }
+          V.dot(x, k.a, 2.8);
+        });
+        arrows.forEach(({ v, j }) => V.arrow([0, 0, 0], v, cols[j], "PC" + (j + 1)));
+      }
+    };
+    const drawScree = () => {
+      const k = C(), p = set.p, tot = E.vals.reduce((s, v) => s + v, 0);
+      S.xr = [0.4, p + 0.6]; S.clear(); S.axes("principal component", "% of variance", ticks(1, p, p - 1), [0, 25, 50, 75, 100]);
+      let cum = 0; const cpts = [];
+      E.vals.forEach((v, j) => {
+        const pct = 100 * v / tot; cum += pct; cpts.push([j + 1, cum]);
+        const c = S.ctx, x0 = S.X(j + 1 - 0.32), x1 = S.X(j + 1 + 0.32);
+        c.fillStyle = j < keep ? k.a : k.grid; c.fillRect(x0, S.Y(pct), x1 - x0, S.Y(0) - S.Y(pct));
+        S.text(pct.toFixed(0) + "%", S.X(j + 1), S.Y(pct) - 9, k.muted, "center");
+      });
+      S.line(cpts, k.b, 2.2); cpts.forEach(([x, y], j) => { S.dot(x, y, j < keep ? k.b : k.bg, 4.2); S.ctx.strokeStyle = k.b; S.ctx.lineWidth = 1.5; S.ctx.beginPath(); S.ctx.arc(S.X(x), S.Y(y), 4.2, 0, 2 * Math.PI); S.ctx.stroke(); });
+      S.text("cumulative", S.X(p + 0.5) - 4, S.Y(cpts[p - 1][1]) + 16, k.b, "right");
+      return { tot, kept: cpts[keep - 1][1] };
+    };
+    const drawTable = () => {
+      const k = C(), p = set.p, tot = E.vals.reduce((s, v) => s + v, 0);
+      let h = "<tr><th></th>" + set.names.map((n) => `<th>${n}</th>`).join("") + "<th>variance</th></tr>";
+      E.vecs.forEach((v, j) => {
+        h += `<tr${j < keep ? ' class="mlw-kept"' : ""}><th>PC${j + 1}</th>` + v.map((x) => {
+          const col = x >= 0 ? k.a : k.r;
+          return `<td><span class="mlw-bar" style="width:${Math.round(34 * Math.abs(x))}px;background:${col}"></span> ${x >= 0 ? "+" : "−"}${Math.abs(x).toFixed(2)}</td>`;
+        }).join("") + `<td>${(100 * E.vals[j] / tot).toFixed(1)}%</td></tr>`;
+      });
+      tbl.innerHTML = h;
+    };
+    const draw = () => {
+      drawData(); const s = drawScree(); drawTable();
+      const p = set.p, lost = E.vals.slice(keep).reduce((a, v) => a + v, 0);
+      out.innerHTML = `Keeping <b>${keep}</b> of ${p} components keeps <b>${s.kept.toFixed(1)}%</b> of the variance. ` +
+        (keep < p ? `Each point is replaced by its projection (orange dots): the mean squared reconstruction error is <b>${lost.toFixed(3)}</b>, the sum of the dropped eigenvalues.` : `With all components kept nothing is lost: PCA is only a rotation.`) +
+        ` The table gives the <b>loadings</b>: the entries of each principal direction, i.e. how much each input contributes to it.`;
+    };
+    const build = () => {
+      if (stopAnim) { stopAnim(); stopAnim = null; }
+      if (V3) V3.stopSpin();
+      left.innerHTML = ""; P2 = null; V3 = null; t = 0;
+      if (set.p === 2) P2 = plot(left, [-5, 5], [-3, 3], { ratio: 0.66, maxWidth: 520 });
+      else { V3 = view3d(left, { scale: 0.115, maxWidth: 520, ratio: 0.8 }); V3.redraw = drawData; }
+      keepS.max = set.p; if (keep > set.p) keep = set.p; keepS.value = keep; keepS.dispatchEvent(new Event("input"));
+      spinB.style.display = set.p === 3 ? "" : "none";
+      rotB.textContent = "Rotate to the PC axes";
+      hint.textContent = set.p === 3 ? "Drag the cloud to turn it in 3-D, or press Spin." : "";
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "data", NAMES, NAMES[0], (v) => { set = SETS[v]; make(); build(); });
+    const keepS = slider(c, "components kept", 1, 2, 1, 1, (v) => v.toFixed(0), (v) => { keep = v; if (E) draw(); });
+    checkbox(c, "show projections", true, (v) => { recon = v; draw(); });
+    const rotB = button(c, "Rotate to the PC axes", () => {
+      if (stopAnim) stopAnim();
+      const from = t, to = t > 0.5 ? 0 : 1;
+      rotB.textContent = to ? "Back to the original axes" : "Rotate to the PC axes";
+      stopAnim = animate(1400, (e) => { t = from + (to - from) * e; drawData(); }, () => { stopAnim = null; draw(); });
+    });
+    const spinB = button(c, "Spin", () => { if (!V3) return; if (V3.spinning()) { V3.stopSpin(); spinB.textContent = "Spin"; } else { V3.spin(); spinB.textContent = "Stop"; } });
+    make(); build(); draw();
+    void k0;
+    return draw;
+  };
+
+  // 23. The kernel trick: lift a disc and a ring into 3-D, where a flat plane separates them
+  W.kernel3d = (box) => {
+    const r = rng(5), X = [];
+    for (let i = 0; i < 90; i++) { const a = 2 * Math.PI * r(), rad = Math.sqrt(r()) * 1.0; X.push([rad * Math.cos(a), rad * Math.sin(a), 1]); }
+    for (let i = 0; i < 90; i++) { const a = 2 * Math.PI * r(), rad = 1.6 + 0.9 * r(); X.push([rad * Math.cos(a), rad * Math.sin(a), 0]); }
+    const V = view3d(box, { scale: 0.16, pitch: 0.42, yaw: -0.5, maxWidth: 560, ratio: 0.7 });
+    let lift = 0, cut = 1.8, stopAnim = null;
+    const ZS = 0.32;                                 // display scale of z = x1^2 + x2^2
+    const out = readout(box);
+    const draw = () => {
+      const k = C(); V.clear(); V.axes(3.2, ["x₁", "x₂", "z"]);
+      const rc = Math.sqrt(cut), circ = [], off = 0.8 * lift;
+      for (let i = 0; i <= 80; i++) { const a = 2 * Math.PI * i / 80; circ.push([rc * Math.cos(a), rc * Math.sin(a), -off]); }
+      V.path(circ, k.r, 1.6, [5, 4]);
+      if (lift > 0.02) { const h = ZS * cut * lift - off, L = 2.8; V.poly([[-L, -L, h], [L, -L, h], [L, L, h], [-L, L, h]], rgba(k.r, 0.12 + 0.1 * lift), rgba(k.r, 0.6)); }
+      const pts = X.map((p) => [p[0], p[1], ZS * lift * (p[0] * p[0] + p[1] * p[1]) - off, p[2]]);
+      pts.map((p, i) => [V.proj(p)[2], i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => {
+        const p = pts[i]; if (lift > 0.02) V.line([p[0], p[1], -off], p, k.grid, 0.8);
+        V.dot(p, p[3] ? k.a : k.b, 3.2);
+      });
+      let ok = 0; X.forEach((p) => { if ((p[0] * p[0] + p[1] * p[1] < cut) === (p[2] === 1)) ok++; });
+      out.innerHTML = `Rule: <b>inner class if z = x₁² + x₂² &lt; ${cut.toFixed(2)}</b> → ${ok} of ${X.length} correct (${(100 * ok / X.length).toFixed(0)}%). ` +
+        `In 3-D this rule is the flat red plane; seen from above (in the original x₁, x₂ plane) it is the dashed circle of radius √c = ${rc.toFixed(2)}. ` +
+        `A kernel lets an SVM work in such a bigger space without ever computing z.`;
+    };
+    V.redraw = draw;
+    const c = el("div", { class: "mlw-controls" }, box);
+    const liftS = slider(c, "lift into 3-D", 0, 1, 0.01, 0, (v) => (100 * v).toFixed(0) + "%", (v) => { lift = v; draw(); });
+    slider(c, "plane height c", 0.2, 6, 0.05, 1.8, (v) => v.toFixed(2), (v) => { cut = v; draw(); });
+    button(c, "Lift", () => {
+      if (stopAnim) stopAnim();
+      const from = lift, to = lift > 0.5 ? 0 : 1;
+      stopAnim = animate(1500, (e) => { lift = from + (to - from) * e; liftS.value = lift; liftS.dispatchEvent(new Event("input")); });
+    });
+    const spinB = button(c, "Spin", () => { if (V.spinning()) { V.stopSpin(); spinB.textContent = "Spin"; } else { V.spin(); spinB.textContent = "Stop"; } });
+    el("div", { class: "mlw-hint" }, box, "Drag the picture to turn it.");
+    draw(); return draw;
+  };
+
+  // 24. Ridge or lasso: the RSS ellipse meets the circle or the diamond
+  W.penalty = (box) => {
+    const b = [2.0, 0.85], H = [[1.0, 0.55], [0.55, 0.8]];       // least-squares point and the shape of the RSS bowl
+    const E = eigSym(H);
+    const rss = (x) => { const d = [x[0] - b[0], x[1] - b[1]]; return d[0] * (H[0][0] * d[0] + H[0][1] * d[1]) + d[1] * (H[1][0] * d[0] + H[1][1] * d[1]); };
+    const solve = (kind, s) => {
+      const inside = kind === "ridge" ? Math.hypot(b[0], b[1]) <= s : Math.abs(b[0]) + Math.abs(b[1]) <= s;
+      if (inside) return b.slice();
+      let best = null, bv = Infinity; const test = (x) => { const v = rss(x); if (v < bv) { bv = v; best = x; } };
+      if (kind === "ridge") for (let i = 0; i < 3600; i++) { const a = 2 * Math.PI * i / 3600; test([s * Math.cos(a), s * Math.sin(a)]); }
+      else { const V = [[s, 0], [0, s], [-s, 0], [0, -s]]; for (let e = 0; e < 4; e++) { const A = V[e], B = V[(e + 1) % 4]; for (let i = 0; i < 1200; i++) { const u = i / 1200; test([A[0] + u * (B[0] - A[0]), A[1] + u * (B[1] - A[1])]); } } }
+      return best;
+    };
+    let kind = "lasso", s = 1.3;
+    const top = el("div", { class: "mlw-pair" }, box);
+    const left = el("div", { class: "mlw-col" }, top), right = el("div", { class: "mlw-col mlw-col-narrow" }, top);
+    const P = plot(left, [-1.2, 3.0], [-1.4, 2.0], { ratio: 0.82, maxWidth: 440 });
+    const Q = plot(right, [0, 3], [-0.2, 2.2], { ratio: 0.8, maxWidth: 340 });
+    const out = readout(box);
+    const ellipse = (level) => {
+      const pts = []; for (let i = 0; i <= 120; i++) {
+        const a = 2 * Math.PI * i / 120, u = [Math.cos(a) * Math.sqrt(level / E.vals[0]), Math.sin(a) * Math.sqrt(level / E.vals[1])];
+        pts.push([b[0] + u[0] * E.vecs[0][0] + u[1] * E.vecs[1][0], b[1] + u[0] * E.vecs[0][1] + u[1] * E.vecs[1][1]]);
+      } return pts;
+    };
+    const path = { ridge: [], lasso: [] };
+    ["ridge", "lasso"].forEach((kk) => { for (let x = 0.02; x <= 3.0; x += 0.02) path[kk].push([x, solve(kk, x)]); });
+    const draw = () => {
+      const k = C(), sol = solve(kind, s), lev = rss(sol);
+      P.clear(); P.axes("β₁", "β₂", ticks(-1, 3, 4), ticks(-1, 2, 3));
+      P.clip(() => {
+        P.line([[-2, 0], [4, 0]], k.grid, 1); P.line([[0, -2], [0, 3]], k.grid, 1);
+        const reg = []; if (kind === "ridge") for (let i = 0; i <= 120; i++) { const a = 2 * Math.PI * i / 120; reg.push([s * Math.cos(a), s * Math.sin(a)]); }
+        else reg.push([s, 0], [0, s], [-s, 0], [0, -s], [s, 0]);
+        const c = P.ctx; c.beginPath(); reg.forEach(([x, y], i) => (i ? c.lineTo(P.X(x), P.Y(y)) : c.moveTo(P.X(x), P.Y(y)))); c.closePath(); c.fillStyle = k.fillA; c.fill();
+        P.line(reg, k.a, 2);
+        [0.15, 0.6, 1.3, 2.3].forEach((l) => P.line(ellipse(l), k.grid, 1));
+        if (lev > 1e-9) P.line(ellipse(lev), k.b, 2.4);
+        P.dot(b[0], b[1], k.b, 4.5); P.text("least squares", P.X(b[0]) + 8, P.Y(b[1]) - 10, k.b);
+        P.dot(sol[0], sol[1], k.r, 5.5);
+      });
+      Q.clear(); Q.axes("budget s", "coefficient", ticks(0, 3, 3), [0, 1, 2]);
+      Q.clip(() => {
+        Q.line([[0, 0], [3, 0]], k.grid, 1);
+        Q.line(path[kind].map(([x, v]) => [x, v[0]]), k.a, 2.2); Q.line(path[kind].map(([x, v]) => [x, v[1]]), k.b, 2.2);
+        Q.line([[s, -1], [s, 3]], k.r, 1.4, [4, 3]);
+        Q.text("β₁", Q.X(2.75), Q.Y(b[0]) - 12, k.a); Q.text("β₂", Q.X(2.75), Q.Y(b[1]) - 12, k.b);
+      });
+      const z = Math.abs(sol[1]) < 1e-12;
+      out.innerHTML = `${kind === "ridge" ? "Ridge: the budget is the disc β₁² + β₂² ≤ s²" : "Lasso: the budget is the diamond |β₁| + |β₂| ≤ s"}. ` +
+        `The answer (red) is where the smallest RSS contour (orange) touches the budget: β̂₁ = <b>${sol[0].toFixed(3)}</b>, β̂₂ = <b>${sol[1].toFixed(3)}</b>.` +
+        (z ? ` <b>β₂ is exactly zero</b>: the contour meets the diamond at its corner, so that input is dropped.` : kind === "ridge" ? " Ridge shrinks both coefficients but neither becomes exactly zero." : "") +
+        ` Right: how the coefficients change with the budget (a smaller budget means a larger λ).`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "penalty", ["lasso", "ridge"], "lasso", (v) => { kind = v; draw(); });
+    slider(c, "budget s", 0.05, 2.6, 0.01, 1.3, (v) => v.toFixed(2), (v) => { s = v; draw(); });
+    draw(); return draw;
+  };
+
+  // 25. Bagging: many bootstrap trees and their average
+  W.bagging = (box) => {
+    const truth = (x) => Math.sin(2 * Math.PI * x) + 0.6 * x, SD = 0.35;
+    let seed = 3, xs = [], ys = [], trees = [], B = 1, depth = 8;
+    const grow = (px, py, d) => {                     // a regression tree on one input
+      const n = px.length, m = py.reduce((s, v) => s + v, 0) / n;
+      if (d === 0 || n < 4) return () => m;
+      const idx = px.map((_, i) => i).sort((a, b) => px[a] - px[b]);
+      let best = null, bs = Infinity, sL = 0, qL = 0; const sT = py.reduce((s, v) => s + v, 0), qT = py.reduce((s, v) => s + v * v, 0);
+      for (let i = 0; i < n - 1; i++) {
+        const y = py[idx[i]]; sL += y; qL += y * y;
+        if (px[idx[i]] === px[idx[i + 1]] || i < 1 || i > n - 3) continue;
+        const nL = i + 1, nR = n - nL, sse = qL - sL * sL / nL + (qT - qL) - (sT - sL) ** 2 / nR;
+        if (sse < bs) { bs = sse; best = (px[idx[i]] + px[idx[i + 1]]) / 2; }
+      }
+      if (best === null) return () => m;
+      const L = [], R = []; px.forEach((x, i) => (x <= best ? L : R).push(i));
+      const fl = grow(L.map((i) => px[i]), L.map((i) => py[i]), d - 1), fr = grow(R.map((i) => px[i]), R.map((i) => py[i]), d - 1);
+      return (x) => (x <= best ? fl(x) : fr(x));
+    };
+    const make = () => {
+      const r = rng(seed); xs = []; ys = [];
+      for (let i = 0; i < 50; i++) { const x = r(); xs.push(x); ys.push(truth(x) + SD * r.normal()); }
+      trees = []; const rb = rng(seed + 100);
+      for (let t = 0; t < 100; t++) { const ix = xs.map(() => Math.floor(rb() * xs.length)); trees.push(grow(ix.map((i) => xs[i]), ix.map((i) => ys[i]), depth)); }
+    };
+    const P = plot(box, [0, 1], [-1.6, 2.2], { ratio: 0.58 });
+    const out = readout(box);
+    const grid = []; for (let x = 0; x <= 1.0001; x += 0.0025) grid.push(x);
+    const mse = (f) => grid.reduce((s, x) => s + (f(x) - truth(x)) ** 2, 0) / grid.length + SD * SD;
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("x", "y", ticks(0, 1, 5), ticks(-1.5, 2, 7));
+      const avg = (x) => { let s = 0; for (let t = 0; t < B; t++) s += trees[t](x); return s / B; };
+      P.clip(() => {
+        for (let t = 0; t < Math.min(B, 12); t++) P.line(grid.map((x) => [x, trees[t](x)]), rgba(k.b, 0.35), 1);
+        P.line(grid.map((x) => [x, truth(x)]), k.muted, 1.8, [6, 4]);
+        xs.forEach((x, i) => P.dot(x, ys[i], k.a, 3));
+        P.line(grid.map((x) => [x, avg(x)]), k.r, 2.8);
+      });
+      let one = 0; for (let t = 0; t < B; t++) one += mse(trees[t]); one /= B;
+      out.innerHTML = `Thin orange: ${Math.min(B, 12)} of the ${B} trees, each grown on its own bootstrap sample. Thick red: their average. Dashed: the truth. ` +
+        `Test MSE of one tree ≈ <b>${one.toFixed(3)}</b>; of the average of ${B} ≈ <b>${mse(avg).toFixed(3)}</b> (the best possible is σ² = ${(SD * SD).toFixed(3)}).`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    slider(c, "number of trees B", 1, 100, 1, 1, (v) => v.toFixed(0), (v) => { B = v; draw(); });
+    slider(c, "depth of each tree", 1, 8, 1, 8, (v) => v.toFixed(0), (v) => { depth = v; make(); draw(); });
+    button(c, "New data", () => { seed += 1; make(); draw(); });
+    make(); draw(); return draw;
+  };
+
+  // 26. Anomaly detection: distance from the PCA line or each sensor on its own
+  W.anomaly = (box) => {
+    const r = rng(14), N = [], F = [];
+    for (let i = 0; i < 300; i++) { const t = r.normal(); N.push([t + 0.15 * r.normal(), 0.9 * t + 0.15 * r.normal()]); }
+    for (let i = 0; i < 30; i++) { const t = r.normal(); F.push([t + 0.15 * r.normal(), -2.0 + 4.0 * r()]); }
+    const mx = [0, 1].map((j) => N.reduce((s, p) => s + p[j], 0) / N.length);
+    const sd = [0, 1].map((j) => Math.sqrt(N.reduce((s, p) => s + (p[j] - mx[j]) ** 2, 0) / N.length));
+    const S = [[0, 0], [0, 0]]; N.forEach((p) => { const d = [p[0] - mx[0], p[1] - mx[1]]; for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) S[i][j] += d[i] * d[j] / N.length; });
+    const u = eigSym(S).vecs[0];
+    const dist = (p) => { const d = [p[0] - mx[0], p[1] - mx[1]], t = d[0] * u[0] + d[1] * u[1]; return Math.hypot(d[0] - t * u[0], d[1] - t * u[1]); };
+    let rule = "distance from the PC1 line", thr = 0.5, sth = 2.5;
+    const P = plot(box, [-3.5, 3.5], [-2.8, 2.8], { ratio: 0.72, maxWidth: 600 });
+    const out = readout(box);
+    const flagged = (p) => (rule === "each sensor on its own" ? [0, 1].some((j) => Math.abs(p[j] - mx[j]) > sth * sd[j]) : dist(p) > thr);
+    const draw = () => {
+      const k = C(); P.clear(); P.axes("sensor 1 (standardised)", "sensor 2 (standardised)", ticks(-3, 3, 6), ticks(-2, 2, 4));
+      P.clip(() => {
+        if (rule === "each sensor on its own") {
+          const x0 = mx[0] - sth * sd[0], x1 = mx[0] + sth * sd[0], y0 = mx[1] - sth * sd[1], y1 = mx[1] + sth * sd[1];
+          P.line([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]], k.b, 1.8, [6, 4]);
+        } else {
+          const nrm = [-u[1], u[0]];
+          [-1, 0, 1].forEach((sg) => P.line([[mx[0] - 6 * u[0] + sg * thr * nrm[0], mx[1] - 6 * u[1] + sg * thr * nrm[1]], [mx[0] + 6 * u[0] + sg * thr * nrm[0], mx[1] + 6 * u[1] + sg * thr * nrm[1]]], sg ? k.b : k.muted, sg ? 1.8 : 1.2, sg ? [6, 4] : []));
+        }
+        N.forEach((p) => { P.dot(p[0], p[1], k.a, 2.6); if (flagged(p)) { P.ctx.strokeStyle = k.b; P.ctx.lineWidth = 1.6; P.ctx.beginPath(); P.ctx.arc(P.X(p[0]), P.Y(p[1]), 6, 0, 7); P.ctx.stroke(); } });
+        F.forEach((p) => { P.dot(p[0], p[1], k.r, 3.6); if (flagged(p)) { P.ctx.strokeStyle = k.b; P.ctx.lineWidth = 2; P.ctx.beginPath(); P.ctx.arc(P.X(p[0]), P.Y(p[1]), 7, 0, 7); P.ctx.stroke(); } });
+      });
+      const caught = F.filter(flagged).length, fa = N.filter(flagged).length;
+      out.innerHTML = `Blue: normal readings; red: sensor 2 has come loose. Circled: flagged as anomalies. ` +
+        `<b>${caught} of ${F.length}</b> faults caught, <b>${fa} of ${N.length}</b> false alarms. ` +
+        (rule === "each sensor on its own" ? "Each faulty reading is inside the normal range of each sensor, so a box cannot catch them without many false alarms." :
+          "Normal readings lie close to the PC1 line, because the sensors move together; a loose sensor moves the point off the line.");
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    const rs = choose(c, "rule", ["distance from the PC1 line", "each sensor on its own"], rule, (v) => { rule = v; thrS.parentNode.style.display = v === "each sensor on its own" ? "none" : ""; sthS.parentNode.style.display = v === "each sensor on its own" ? "" : "none"; draw(); });
+    const thrS = slider(c, "distance threshold", 0.1, 1.5, 0.01, thr, (v) => v.toFixed(2), (v) => { thr = v; draw(); });
+    const sthS = slider(c, "limit (standard deviations)", 0.5, 3.5, 0.05, sth, (v) => v.toFixed(2), (v) => { sth = v; draw(); });
+    sthS.parentNode.style.display = "none"; void rs;
+    draw(); return draw;
+  };
+
+  // 27. A latent space: two numbers decode into a whole shower profile
+  W.latent = (box) => {
+    let z = [0, 0], walking = false;
+    const top = el("div", { class: "mlw-pair" }, box);
+    const left = el("div", { class: "mlw-col mlw-col-narrow" }, top), right = el("div", { class: "mlw-col" }, top);
+    const L = plot(left, [-3, 3], [-3, 3], { ratio: 1, maxWidth: 300 });
+    const P = plot(right, [0, 25], [0, 12], { ratio: 0.66, maxWidth: 460 });
+    const out = readout(box);
+    const cloud = []; { const r = rng(4); for (let i = 0; i < 160; i++) cloud.push([r.normal(), r.normal()]); }
+    const decode = (zz) => {                          // stands in for a trained decoder: energy from z1, depth from z2
+      const E = Math.max(10, Math.min(100, 55 + 22 * zz[0])), b = 0.5, tmax = Math.log(E / 0.022) - 0.5 + 0.9 * zz[1], a = 1 + b * Math.max(1, tmax);
+      const prof = []; let s = 0; for (let i = 0; i < 25; i++) { const t = i + 0.5, v = Math.pow(t, a - 1) * Math.exp(-b * t); prof.push(v); s += v; }
+      return { E, tmax, prof: prof.map((v) => E * v / s) };
+    };
+    const draw = () => {
+      const k = C(); L.clear(); L.axes("z₁", "z₂", ticks(-3, 3, 6), ticks(-3, 3, 6));
+      L.clip(() => {
+        [1, 2].forEach((rr) => { const pts = []; for (let i = 0; i <= 80; i++) { const a = 2 * Math.PI * i / 80; pts.push([rr * Math.cos(a), rr * Math.sin(a)]); } L.line(pts, k.grid, 1.2, [4, 3]); });
+        cloud.forEach(([x, y]) => L.dot(x, y, k.grid, 2.2));
+        L.dot(z[0], z[1], k.r, 6.5);
+      });
+      const d = decode(z), ref = decode([0, 0]);
+      P.clear(); P.axes("depth t (radiation lengths X₀)", "energy per layer (GeV)", ticks(0, 25, 5), ticks(0, 12, 4));
+      P.clip(() => {
+        const c = P.ctx; d.prof.forEach((v, i) => { c.fillStyle = k.fillA; c.strokeStyle = k.a; const x0 = P.X(i + 0.08), x1 = P.X(i + 0.92); c.fillRect(x0, P.Y(v), x1 - x0, P.Y(0) - P.Y(v)); c.strokeRect(x0, P.Y(v), x1 - x0, P.Y(0) - P.Y(v)); });
+        P.line(ref.prof.map((v, i) => [i + 0.5, v]), k.muted, 1.4, [5, 4]);
+        P.line([[d.tmax, 0], [d.tmax, 12]], k.r, 1.4, [3, 3]);
+      });
+      out.innerHTML = `z = (${z[0].toFixed(2)}, ${z[1].toFixed(2)}) → a shower of <b>${d.E.toFixed(0)} GeV</b> with its maximum at <b>${d.tmax.toFixed(1)} X₀</b>. ` +
+        `Two latent numbers decode into 25 layer energies. The grey cloud is where training showers land in latent space (a standard Gaussian); dashed profile: z = (0, 0).`;
+    };
+    const setFrom = (e) => { const rc = L.cv.getBoundingClientRect(); z = [Math.max(-3, Math.min(3, L.invX(e.clientX - rc.left))), Math.max(-3, Math.min(3, L.invY(e.clientY - rc.top)))]; draw(); };
+    L.cv.style.touchAction = "none"; L.cv.style.cursor = "crosshair"; let down = false;
+    L.cv.addEventListener("pointerdown", (e) => { down = true; walking = false; walkB.textContent = "Walk through latent space"; L.cv.setPointerCapture(e.pointerId); setFrom(e); });
+    L.cv.addEventListener("pointermove", (e) => { if (down) setFrom(e); });
+    L.cv.addEventListener("pointerup", () => { down = false; });
+    const c = el("div", { class: "mlw-controls" }, box);
+    button(c, "Draw a random z", () => { const r = Math.random; const u = () => Math.sqrt(-2 * Math.log(r() + 1e-12)) * Math.cos(2 * Math.PI * r()); z = [u(), u()]; draw(); });
+    const walkB = button(c, "Walk through latent space", () => {
+      walking = !walking; walkB.textContent = walking ? "Stop" : "Walk through latent space";
+      if (walking) { const t0 = performance.now(); const f = (now) => { if (!walking) return; const a = (now - t0) * 0.0012; z = [1.5 * Math.cos(a), 1.5 * Math.sin(a)]; draw(); requestAnimationFrame(f); }; requestAnimationFrame(f); }
+    });
+    el("div", { class: "mlw-hint" }, box, "Click or drag in the latent plane (left). Here the decoder is the average-profile formula, standing in for a trained network.");
+    draw(); return draw;
+  };
+
+  // 28. Basis functions: polynomial, step functions and splines on the same data
+  W.basis = (box) => {
+    const truth = (h) => 20 + 12 * Math.exp(-((h - 9) ** 2) / (2 * 1.5 * 1.5)) + 25 * Math.exp(-((h - 19.5) ** 2) / (2 * 2 * 2));
+    const r = rng(12), xs = [], ys = [];
+    for (let i = 0; i < 120; i++) { const h = 24 * r(); xs.push(h); ys.push(truth(h) + 4 * r.normal()); }
+    let kind = "cubic spline", K = 4, deg = 3;
+    const feats = (h, knots) => {
+      const x = h / 24, f = [1];
+      if (kind === "polynomial") for (let j = 1; j <= deg; j++) f.push(Math.pow(x - 0.5, j));
+      else if (kind === "step functions") knots.forEach((c) => f.push(h >= c ? 1 : 0));
+      else if (kind === "piecewise linear") { f.push(x); knots.forEach((c) => f.push(Math.max(0, x - c / 24))); }
+      else { f.push(x, x * x, x * x * x); knots.forEach((c) => f.push(Math.max(0, x - c / 24) ** 3)); }
+      return f;
+    };
+    const P = plot(box, [0, 24], [0, 70], { ratio: 0.58 });
+    const out = readout(box);
+    const draw = () => {
+      const k = C(), knots = []; for (let j = 1; j <= K; j++) knots.push(24 * j / (K + 1));
+      const w = lsq(xs.map((h) => feats(h, knots)), ys, 1e-9), f = (h) => feats(h, knots).reduce((s, v, i) => s + v * w[i], 0);
+      P.clear(); P.axes("hour of the day", "demand (kW)", ticks(0, 24, 6), ticks(0, 70, 7));
+      P.clip(() => {
+        if (kind !== "polynomial") knots.forEach((c) => P.line([[c, 0], [c, 70]], k.grid, 1.2, [4, 3]));
+        xs.forEach((x, i) => P.dot(x, ys[i], k.a, 2.6));
+        const g = []; for (let h = 0; h <= 24; h += 0.04) g.push([h, f(h)]);
+        P.line(g, k.r, 2.6);
+      });
+      let te = 0, n = 0; for (let h = 0; h <= 24; h += 0.05) { te += (f(h) - truth(h)) ** 2; n++; }
+      const p = feats(0, knots).length;
+      out.innerHTML = `${kind}${kind === "polynomial" ? ` of degree ${deg}` : ` with ${K} knot${K > 1 ? "s" : ""} (dashed lines)`}: <b>${p}</b> coefficients. ` +
+        `Test MSE ≈ <b>${(te / n + 16).toFixed(1)}</b> kW² (the best possible is the noise, 16 kW²).`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "fit", ["polynomial", "step functions", "piecewise linear", "cubic spline"], kind, (v) => { kind = v; kS.parentNode.style.display = v === "polynomial" ? "none" : ""; dS.parentNode.style.display = v === "polynomial" ? "" : "none"; draw(); });
+    const kS = slider(c, "number of knots K", 1, 12, 1, K, (v) => v.toFixed(0), (v) => { K = v; draw(); });
+    const dS = slider(c, "degree d", 1, 12, 1, deg, (v) => v.toFixed(0), (v) => { deg = v; draw(); });
+    dS.parentNode.style.display = "none";
+    draw(); return draw;
+  };
+
+  // 29. LDA or QDA: linear and quadratic class boundaries
+  W.lda = (box) => {
+    const r = rng(8), Z = []; for (let i = 0; i < 200; i++) Z.push([r.normal(), r.normal()]);
+    let sep = 2.0, spread = 1.8, method = "QDA";
+    const P = plot(box, [-4, 6], [-4, 4], { ratio: 0.72, maxWidth: 620 });
+    const out = readout(box);
+    const data = () => Z.map((z, i) => i < 100
+      ? { x: [-1 + 0.9 * z[0], 0.2 + 0.7 * z[1] + 0.25 * z[0]], y: 0 }
+      : { x: [-1 + sep + spread * 0.8 * z[0], 0.2 + spread * (0.45 * z[1] - 0.25 * z[0])], y: 1 });
+    const fit = (D, kind) => {
+      const g = [0, 1].map((c) => {
+        const pts = D.filter((d) => d.y === c).map((d) => d.x), n = pts.length, m = [0, 1].map((j) => pts.reduce((s, p) => s + p[j], 0) / n);
+        const S = [[0, 0], [0, 0]]; pts.forEach((p) => { for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) S[i][j] += (p[i] - m[i]) * (p[j] - m[j]) / n; });
+        return { m, S, n };
+      });
+      if (kind === "LDA") { const S = [[0, 0], [0, 0]]; g.forEach((c) => { for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) S[i][j] += c.S[i][j] * c.n / D.length; }); g.forEach((c) => { c.S = S; }); }
+      g.forEach((c) => { const d = c.S[0][0] * c.S[1][1] - c.S[0][1] * c.S[1][0]; c.inv = [[c.S[1][1] / d, -c.S[0][1] / d], [-c.S[1][0] / d, c.S[0][0] / d]]; c.ld = Math.log(d); c.lp = Math.log(c.n / D.length); });
+      const delta = (c, x) => { const d = [x[0] - c.m[0], x[1] - c.m[1]]; return -0.5 * c.ld - 0.5 * (d[0] * (c.inv[0][0] * d[0] + c.inv[0][1] * d[1]) + d[1] * (c.inv[1][0] * d[0] + c.inv[1][1] * d[1])) + c.lp; };
+      return (x) => (delta(g[1], x) > delta(g[0], x) ? 1 : 0);
+    };
+    const draw = () => {
+      const k = C(), D = data(), f = fit(D, method), nx = 100, ny = 70;
+      P.clear();
+      const c = P.ctx, cw = (P.X(6) - P.X(-4)) / nx, ch = (P.Y(-4) - P.Y(4)) / ny;
+      for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) { const x = -4 + (i + 0.5) * 10 / nx, y = 4 - (j + 0.5) * 8 / ny; c.fillStyle = f([x, y]) ? k.fillB : k.fillA; c.fillRect(P.X(-4) + i * cw, P.Y(4) + j * ch, cw + 0.5, ch + 0.5); }
+      P.axes("x₁", "x₂", ticks(-4, 6, 5), ticks(-4, 4, 4));
+      D.forEach((d) => P.dot(d.x[0], d.x[1], d.y ? k.b : k.a, 3));
+      const err = (kind) => { const g = fit(D, kind); return D.filter((d) => g(d.x) !== d.y).length / D.length; };
+      out.innerHTML = `Shaded: the class each method predicts. Training error: LDA <b>${(100 * err("LDA")).toFixed(1)}%</b>, QDA <b>${(100 * err("QDA")).toFixed(1)}%</b>. ` +
+        `LDA assumes both classes share one covariance matrix, so its boundary is a straight line; QDA gives each class its own, so the boundary can curve.`;
+    };
+    const c = el("div", { class: "mlw-controls" }, box);
+    choose(c, "method", ["QDA", "LDA"], method, (v) => { method = v; draw(); });
+    slider(c, "separation of the classes", 0.5, 4, 0.05, sep, (v) => v.toFixed(2), (v) => { sep = v; draw(); });
+    slider(c, "spread of the orange class", 0.5, 2.5, 0.05, spread, (v) => v.toFixed(2), (v) => { spread = v; draw(); });
+    draw(); return draw;
+  };
+
   function start() {
     document.querySelectorAll(".ml-widget[data-widget]").forEach((box) => {
       const name = box.dataset.widget;
